@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety. The codebase has ~621 production lines across 3 source files with 59 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management prevents unbounded growth.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~621 production lines across 3 source files with 61 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management prevents unbounded growth.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 59 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 61 unit tests.
 
 File structure:
-- src/main.rs (358 lines, 180 production + 177 test)
-- src/api.rs (324 lines, 186 production + 137 test)
-- src/tools/mod.rs (685 lines, 255 production + 430 test)
-- Total: 1367 lines (~621 production + ~744 test)
+- src/main.rs (~180 production lines)
+- src/api.rs (~186 production lines)
+- src/tools/mod.rs (~255 production lines)
+- Total: ~621 production lines + ~744 test lines
 
 ## Architectural Decisions
 
@@ -58,6 +58,12 @@ Conversation trimming must respect tool_use/tool_result pairing. The Anthropic A
 
 Token estimation via JSON serialization size is pragmatic. Rather than importing a tokenizer library, estimating tokens at ~4 chars/token from the serialized JSON payload provides a good approximation since that's the actual wire format. The 720KB budget (~180K tokens) leaves headroom for system prompt, tool schemas, and the response within the 200K token context window.
 
+SSE content_block_start can receive unknown block types (thinking, server_tool_use). The blocks[] and fragments[] parallel arrays MUST stay in sync by index — any mismatch causes data corruption for all subsequent blocks in the same response. The solution is to push a placeholder Text block for unknown types, then filter empty text blocks before returning from send_message.
+
+Anthropic SSE stream can send error events mid-stream during overload or rate-limiting. These must be explicitly handled with a dedicated match arm rather than being swallowed by a catch-all `_ => {}` pattern. Error events are now matched and returned as `AgentError::StreamParse`.
+
+On max_tokens truncation, tool_use blocks may be incomplete with null input because the `content_block_stop` event never fires. These corrupt blocks must be stripped from conversation history before breaking the loop to prevent API errors on subsequent calls. The filter checks for `ToolUse` blocks with `input == Value::Null`.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -75,20 +81,29 @@ The specification has been updated to reflect implementation decisions:
 - R3 updated: enum example replaced with tools! macro pattern that matches implementation.
 - R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false). bash_exec truncates output at 100KB. Directory filter works at any depth using file_name comparison.
 - R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode.
-- R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`.
+- R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`. Partial tool_use blocks filtered on truncation.
+- SSE hardened: Unknown block types handled via placeholder blocks to maintain index sync. Mid-stream error events explicitly detected. Empty text blocks filtered before returning.
+- System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
+- Tool descriptions enriched to match Go reference quality with usage guidance.
+- max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
 - Line target updated from <500 to <600 to accommodate full R4/R5/R7 compliance and context management (~621 actual).
 
 ## Verification Checklist
 
 [x] All 5 tools implemented: read_file, list_files, bash, edit_file, code_search
 [x] SSE streaming with real-time output and stop_reason parsing (R7)
+[x] SSE unknown block type handling: placeholder blocks maintain index sync
+[x] SSE mid-stream error events explicitly matched and returned as errors
+[x] Partial tool_use blocks with null input filtered on MaxTokens truncation
 [x] CLI: --verbose, --model flags, stdin pipe detection (R5)
 [x] Event loop follows Go reference structure with explicit stop_reason check
 [x] Tool dispatch with is_error propagation
 [x] Bash timeout protection (120s, returns is_error: true on timeout)
 [x] Bash pipe deadlock prevention (threaded stdout/stderr draining)
 [x] Bash output truncation (100KB limit)
-[x] System prompt configured, max_tokens set to 8192
+[x] System prompt: structured workflow instructions (read-before-edit, minimal changes, etc.)
+[x] Tool descriptions: enriched with usage guidance matching Go reference quality
+[x] max_tokens set to 16384 for Opus performance (API supports up to 128K)
 [x] StopReason enum: EndTurn, ToolUse, MaxTokens — parsed from message_delta SSE event
 [x] MaxTokens truncation warning displayed to user
 [x] Non-interactive mode: suppresses prompts when stdin is piped
@@ -103,4 +118,4 @@ The specification has been updated to reflect implementation decisions:
 [x] cargo fmt --check passes
 [x] cargo clippy -- -D warnings passes
 [x] cargo build --release passes
-[x] cargo test passes (59 unit tests)
+[x] cargo test passes (61 unit tests)

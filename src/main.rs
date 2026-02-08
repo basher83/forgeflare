@@ -138,6 +138,13 @@ async fn main() {
             }
             if stop_reason == StopReason::MaxTokens {
                 eprintln!("\x1b[93m[warning]\x1b[0m Response truncated (max_tokens reached)");
+                // Remove partial ToolUse blocks with null input from conversation
+                // to prevent corrupt tool_use blocks in future API calls
+                if let Some(msg) = conversation.last_mut() {
+                    msg.content.retain(
+                        |b| !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null()),
+                    );
+                }
                 break;
             }
             let mut tool_results: Vec<ContentBlock> = Vec::new();
@@ -181,6 +188,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn user_text(s: &str) -> Message {
         Message {
@@ -354,5 +362,35 @@ mod tests {
         let mut conv: Vec<Message> = Vec::new();
         trim_conversation(&mut conv, 100); // should not panic
         assert!(conv.is_empty());
+    }
+
+    #[test]
+    fn partial_tool_use_filtered_on_truncation() {
+        // Simulates what happens when MaxTokens truncates mid-tool_use:
+        // the ToolUse block has input: Value::Null because content_block_stop never fired
+        let mut msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "Let me check".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "t2".into(),
+                    name: "read_file".into(),
+                    input: Value::Null, // partial — never completed
+                },
+            ],
+        };
+        // The same filter used in the MaxTokens handler
+        msg.content
+            .retain(|b| !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null()));
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(&msg.content[0], ContentBlock::Text { .. }));
+        assert!(matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "bash"));
     }
 }

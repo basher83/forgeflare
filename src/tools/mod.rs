@@ -27,19 +27,19 @@ macro_rules! tools {
 }
 
 tools! {
-    "read_file", "Read a file's contents with line numbers",
+    "read_file", "Read the contents of a given relative file path with line numbers. Use this when you want to see what's inside a file. Do not use this with directory names.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Relative file path"}}, "required": ["path"]}),
     read_exec;
-    "list_files", "List files and directories. Defaults to current directory, non-recursive.",
+    "list_files", "List files and directories at a given path. If no path is provided, lists files in the current directory.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []}),
     list_exec;
-    "bash", "Execute a bash command and return its output (120s timeout)",
+    "bash", "Execute a bash command and return its output. Use this to run shell commands. Commands are killed after 120s.",
     serde_json::json!({"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "cwd": {"type": "string", "description": "Optional working directory"}}, "required": ["command"]}),
     bash_exec;
-    "edit_file", "Replace old_str with new_str in a file. Empty old_str creates file if missing, or appends if it exists.",
+    "edit_file", "Make edits to a text file. Replaces 'old_str' with 'new_str' in the given file. 'old_str' and 'new_str' MUST be different from each other. If the file doesn't exist and old_str is empty, it will be created.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for (must match exactly once). Empty string = create/append mode"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}}, "required": ["path", "old_str", "new_str"]}),
     edit_exec;
-    "code_search", "Search for code patterns using ripgrep (rg)",
+    "code_search", "Search for code patterns using ripgrep (rg). Use this to find code patterns, function definitions, variable usage, or any text in the codebase.",
     serde_json::json!({"type": "object", "properties": {"pattern": {"type": "string", "description": "The search pattern or regex"}, "path": {"type": "string", "description": "Optional path to search in"}, "file_type": {"type": "string", "description": "File extension filter (e.g. 'go', 'js')"}, "case_sensitive": {"type": "boolean", "description": "Case sensitive (default: false)"}}, "required": ["pattern"]}),
     search_exec;
 }

@@ -83,8 +83,8 @@ impl AnthropicClient {
         model: &str,
     ) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
         let body = serde_json::json!({
-            "model": model, "max_tokens": 8192, "stream": true,
-            "system": "You are a coding agent. You have tools to read files, list directories, run bash commands, edit files, and search code. Use them to help the user with software engineering tasks. Think step by step. When editing code, read the file first to understand context.",
+            "model": model, "max_tokens": 16384, "stream": true,
+            "system": "You are a coding agent with tools for reading files, listing directories, running bash commands, editing files, and searching code.\n\nWorkflow: 1) Understand the request. 2) Explore relevant code with read_file and code_search before making changes. 3) Plan your approach. 4) Make targeted edits. 5) Verify changes work.\n\nRules:\n- ALWAYS read a file before editing it. Never edit blind.\n- Use code_search to find relevant code across the project before making assumptions.\n- Make minimal, focused changes. Don't refactor unrelated code.\n- When editing, include enough context in old_str to match exactly once.\n- Verify edits by reading the file after changes.\n- For bash commands: avoid destructive operations (rm -rf, force push) without explicit user approval.\n- If a command fails, analyze the error before retrying with a different approach.\n- Explain what you're doing and why, but be concise.",
             "messages": messages, "tools": tools
         });
         let response = self
@@ -137,7 +137,11 @@ impl AnthropicClient {
                                 name: b["name"].as_str().unwrap_or_default().into(),
                                 input: Value::Null,
                             }),
-                            _ => {}
+                            // Unknown block types (thinking, server_tool_use, future types):
+                            // push placeholder to keep blocks[] and fragments[] indices aligned
+                            _ => blocks.push(ContentBlock::Text {
+                                text: String::new(),
+                            }),
                         }
                         fragments.push(String::new());
                     }
@@ -167,7 +171,9 @@ impl AnthropicClient {
                         {
                             *input = serde_json::from_str(f).unwrap_or(Value::Null);
                         }
-                        if matches!(blocks.get(idx), Some(ContentBlock::Text { .. })) {
+                        if let Some(ContentBlock::Text { text }) = blocks.get(idx)
+                            && !text.is_empty()
+                        {
                             println!();
                         }
                     }
@@ -176,10 +182,18 @@ impl AnthropicClient {
                         Some("max_tokens") => stop_reason = StopReason::MaxTokens,
                         _ => {}
                     },
+                    "error" => {
+                        let msg = p["error"]["message"]
+                            .as_str()
+                            .unwrap_or("unknown stream error");
+                        return Err(AgentError::StreamParse(format!("stream error: {msg}")));
+                    }
                     _ => {}
                 }
             }
         }
+        // Filter out placeholder blocks from unknown SSE content types (e.g. thinking)
+        blocks.retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
         Ok((blocks, stop_reason))
     }
 }
@@ -320,5 +334,32 @@ mod tests {
         assert_eq!(format!("{:?}", StopReason::EndTurn), "EndTurn");
         assert_eq!(format!("{:?}", StopReason::ToolUse), "ToolUse");
         assert_eq!(format!("{:?}", StopReason::MaxTokens), "MaxTokens");
+    }
+
+    #[test]
+    fn empty_text_blocks_filtered() {
+        // Placeholder blocks (from unknown SSE content types like thinking)
+        // should be filtered out before returning from send_message.
+        // This tests the retain filter logic directly.
+        let mut blocks = vec![
+            ContentBlock::Text {
+                text: String::new(),
+            }, // placeholder for unknown type
+            ContentBlock::Text {
+                text: "real content".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            },
+            ContentBlock::Text {
+                text: String::new(),
+            }, // another placeholder
+        ];
+        blocks.retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "real content"));
+        assert!(matches!(&blocks[1], ContentBlock::ToolUse { .. }));
     }
 }
