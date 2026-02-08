@@ -49,15 +49,13 @@ fn read_exec(input: Value) -> Result<String, String> {
     let meta = fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if meta.len() > MAX_READ_SIZE {
         return Err(format!(
-            "{path}: file is {}KB, exceeds {}KB limit",
+            "{path}: {}KB exceeds {}KB limit",
             meta.len() / 1024,
             MAX_READ_SIZE / 1024
         ));
     }
-    // Binary detection: check first 8KB for null bytes
     let raw = fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let check_len = raw.len().min(8192);
-    if raw[..check_len].contains(&0) {
+    if raw[..raw.len().min(8192)].contains(&0) {
         return Err(format!("{path}: binary file, cannot display contents"));
     }
     let content = String::from_utf8(raw).map_err(|_| format!("{path}: not valid UTF-8"))?;
@@ -74,6 +72,7 @@ fn list_exec(input: Value) -> Result<String, String> {
     let recursive = input["recursive"].as_bool().unwrap_or(false);
     let mut files = Vec::new();
     walk(Path::new(dir), Path::new(dir), &mut files, recursive).map_err(|e| e.to_string())?;
+    files.sort();
     serde_json::to_string(&files).map_err(|e| e.to_string())
 }
 
@@ -107,7 +106,6 @@ fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> st
     Ok(())
 }
 
-/// Truncate a string at the nearest char boundary at or before `max` bytes, appending a marker.
 fn truncate_with_marker(s: &mut String, max: usize) {
     let mut end = max;
     while !s.is_char_boundary(end) {
@@ -129,24 +127,16 @@ fn bash_exec(input: Value) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("exec failed: {e}"))?;
-    // Drain stdout/stderr in threads to prevent pipe buffer deadlock.
-    // If we wait() before reading, commands producing >64KB block on the full pipe.
-    let out_h = std::thread::spawn({
-        let mut out = child.stdout.take().unwrap();
-        move || {
-            let mut b = String::new();
-            out.read_to_string(&mut b).ok();
-            b
-        }
-    });
-    let err_h = std::thread::spawn({
-        let mut err = child.stderr.take().unwrap();
-        move || {
-            let mut b = String::new();
-            err.read_to_string(&mut b).ok();
-            b
-        }
-    });
+    fn drain<R: Read + Send + 'static>(r: R) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let mut r = r;
+            r.read_to_string(&mut s).ok();
+            s
+        })
+    }
+    let out_h = drain(child.stdout.take().unwrap());
+    let err_h = drain(child.stderr.take().unwrap());
     let status = match child
         .wait_timeout(BASH_TIMEOUT)
         .map_err(|e| format!("wait: {e}"))?
@@ -193,12 +183,10 @@ fn edit_exec(input: Value) -> Result<String, String> {
     if old_str.is_empty() {
         fs::write(path, format!("{content}{new_str}")).map_err(|e| format!("write: {e}"))?;
     } else {
-        let count = content.matches(old_str).count();
-        if count == 0 {
-            return Err("old_str not found".into());
-        }
-        if count > 1 {
-            return Err(format!("old_str found {count} times, must be unique"));
+        match content.matches(old_str).count() {
+            0 => return Err("old_str not found".into()),
+            1 => {}
+            n => return Err(format!("old_str found {n} times, must be unique")),
         }
         fs::write(path, content.replacen(old_str, new_str, 1))
             .map_err(|e| format!("write: {e}"))?;
@@ -226,10 +214,10 @@ fn search_exec(input: Value) -> Result<String, String> {
         .args(&args)
         .output()
         .map_err(|e| format!("rg failed: {e}"))?;
+    if output.status.code() == Some(1) {
+        return Ok("No matches found".into());
+    }
     if !output.status.success() {
-        if output.status.code() == Some(1) {
-            return Ok("No matches found".into());
-        }
         return Err(format!(
             "search failed: {}",
             String::from_utf8_lossy(&output.stderr)

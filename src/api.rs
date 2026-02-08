@@ -55,11 +55,122 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
 }
 
-// R8: Subagent coordination types (dispatch not yet implemented)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct SubagentContext {
     pub subagent_id: Option<String>,
+} // R8: future dispatch
+
+#[derive(Default)]
+struct SseParser {
+    event: String,
+    blocks: Vec<ContentBlock>,
+    fragments: Vec<String>,
+    stop_reason: Option<StopReason>,
+    message_complete: bool,
+}
+
+impl SseParser {
+    fn process_line(&mut self, line: &str) -> Result<(), AgentError> {
+        if line.is_empty() {
+            return Ok(());
+        }
+        if let Some(ev) = line.strip_prefix("event: ") {
+            self.event = ev.into();
+            return Ok(());
+        }
+        let Some(data) = line.strip_prefix("data: ") else {
+            return Ok(());
+        };
+        let p: Value = serde_json::from_str(data)?;
+        match self.event.as_str() {
+            "content_block_start" => {
+                let b = &p["content_block"];
+                if b["type"].as_str() == Some("tool_use") {
+                    self.blocks.push(ContentBlock::ToolUse {
+                        id: b["id"].as_str().unwrap_or_default().into(),
+                        name: b["name"].as_str().unwrap_or_default().into(),
+                        input: Value::Null,
+                    });
+                } else {
+                    // Placeholder for text/unknown types — keeps indices aligned
+                    self.blocks.push(ContentBlock::Text {
+                        text: String::new(),
+                    });
+                }
+                self.fragments.push(String::new());
+            }
+            "content_block_delta" => {
+                let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
+                    return Ok(());
+                };
+                let delta = &p["delta"];
+                match delta["type"].as_str() {
+                    Some("text_delta") => {
+                        let t = delta["text"].as_str().unwrap_or_default();
+                        print!("\x1b[93m{t}\x1b[0m");
+                        std::io::stdout().flush().ok();
+                        if let Some(ContentBlock::Text { text }) = self.blocks.get_mut(idx) {
+                            text.push_str(t);
+                        }
+                    }
+                    Some("input_json_delta") => {
+                        if let Some(f) = self.fragments.get_mut(idx) {
+                            f.push_str(delta["partial_json"].as_str().unwrap_or_default());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
+                    return Ok(());
+                };
+                if let Some(ContentBlock::ToolUse { input, .. }) = self.blocks.get_mut(idx)
+                    && let Some(f) = self.fragments.get(idx).filter(|f| !f.is_empty())
+                {
+                    *input = serde_json::from_str(f).unwrap_or_else(|e| {
+                        eprintln!(
+                            "\x1b[91m[warning]\x1b[0m Corrupt tool input (JSON parse failed: {e})"
+                        );
+                        Value::Null
+                    });
+                }
+                if let Some(ContentBlock::Text { text }) = self.blocks.get(idx)
+                    && !text.is_empty()
+                {
+                    println!();
+                }
+            }
+            "message_delta" => match p["delta"]["stop_reason"].as_str() {
+                Some("end_turn") => self.stop_reason = Some(StopReason::EndTurn),
+                Some("tool_use") => self.stop_reason = Some(StopReason::ToolUse),
+                Some("max_tokens") => self.stop_reason = Some(StopReason::MaxTokens),
+                _ => {}
+            },
+            "message_stop" => self.message_complete = true,
+            "error" => {
+                let msg = p["error"]["message"]
+                    .as_str()
+                    .unwrap_or("unknown stream error");
+                return Err(AgentError::StreamParse(format!("stream error: {msg}")));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
+        self.blocks
+            .retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
+        let stop = self
+            .stop_reason
+            .or(self.message_complete.then_some(StopReason::EndTurn))
+            .ok_or(AgentError::StreamParse(
+                "stream ended without stop_reason".into(),
+            ))?;
+        Ok((self.blocks, stop))
+    }
 }
 
 pub struct AnthropicClient {
@@ -104,115 +215,18 @@ impl AnthropicClient {
         }
 
         let mut stream = response.bytes_stream();
-        let (mut buf, mut event) = (String::new(), String::new());
-        let mut blocks: Vec<ContentBlock> = Vec::new();
-        let mut fragments: Vec<String> = Vec::new();
-        let mut stop_reason: Option<StopReason> = None;
-        let mut message_complete = false;
+        let mut buf = String::new();
+        let mut parser = SseParser::default();
 
         while let Some(chunk) = stream.next().await {
             buf.push_str(&String::from_utf8_lossy(&chunk?));
             while let Some(nl) = buf.find('\n') {
                 let line = buf[..nl].trim_end().to_string();
                 buf.drain(..nl + 1);
-                if line.is_empty() {
-                    continue;
-                }
-                if let Some(ev) = line.strip_prefix("event: ") {
-                    event = ev.into();
-                    continue;
-                }
-                let Some(data) = line.strip_prefix("data: ") else {
-                    continue;
-                };
-                let p: Value = serde_json::from_str(data)?;
-                match event.as_str() {
-                    "content_block_start" => {
-                        let b = &p["content_block"];
-                        if b["type"].as_str() == Some("tool_use") {
-                            blocks.push(ContentBlock::ToolUse {
-                                id: b["id"].as_str().unwrap_or_default().into(),
-                                name: b["name"].as_str().unwrap_or_default().into(),
-                                input: Value::Null,
-                            });
-                        } else {
-                            // Text and unknown types (thinking, server_tool_use, etc.):
-                            // placeholder keeps blocks[] and fragments[] indices aligned
-                            blocks.push(ContentBlock::Text {
-                                text: String::new(),
-                            });
-                        }
-                        fragments.push(String::new());
-                    }
-                    "content_block_delta" => {
-                        let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
-                            continue;
-                        };
-                        let delta = &p["delta"];
-                        match delta["type"].as_str() {
-                            Some("text_delta") => {
-                                let t = delta["text"].as_str().unwrap_or_default();
-                                print!("\x1b[93m{t}\x1b[0m");
-                                std::io::stdout().flush().ok();
-                                if let Some(ContentBlock::Text { text }) = blocks.get_mut(idx) {
-                                    text.push_str(t);
-                                }
-                            }
-                            Some("input_json_delta") => {
-                                if let Some(f) = fragments.get_mut(idx) {
-                                    f.push_str(delta["partial_json"].as_str().unwrap_or_default());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    "content_block_stop" => {
-                        let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
-                            continue;
-                        };
-                        if let Some(ContentBlock::ToolUse { input, .. }) = blocks.get_mut(idx)
-                            && let Some(f) = fragments.get(idx).filter(|f| !f.is_empty())
-                        {
-                            *input = serde_json::from_str(f).unwrap_or_else(|e| {
-                                eprintln!("\x1b[91m[warning]\x1b[0m Corrupt tool input (JSON parse failed: {e})");
-                                Value::Null
-                            });
-                        }
-                        if let Some(ContentBlock::Text { text }) = blocks.get(idx)
-                            && !text.is_empty()
-                        {
-                            println!();
-                        }
-                    }
-                    "message_delta" => match p["delta"]["stop_reason"].as_str() {
-                        Some("end_turn") => stop_reason = Some(StopReason::EndTurn),
-                        Some("tool_use") => stop_reason = Some(StopReason::ToolUse),
-                        Some("max_tokens") => stop_reason = Some(StopReason::MaxTokens),
-                        _ => {}
-                    },
-                    "message_stop" => message_complete = true,
-                    "error" => {
-                        let msg = p["error"]["message"]
-                            .as_str()
-                            .unwrap_or("unknown stream error");
-                        return Err(AgentError::StreamParse(format!("stream error: {msg}")));
-                    }
-                    _ => {}
-                }
+                parser.process_line(&line)?;
             }
         }
-        // Filter out placeholder blocks from unknown SSE content types (e.g. thinking)
-        blocks.retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
-        // Detect incomplete streams: if message_delta never delivered a stop_reason,
-        // the connection was dropped mid-stream (message_complete is a defensive fallback)
-        let stop_reason = stop_reason
-            .or(message_complete.then_some(StopReason::EndTurn))
-            .ok_or_else(|| {
-                AgentError::StreamParse(
-                    "stream ended without stop_reason (connection dropped?)".into(),
-                )
-            })?;
-        Ok((blocks, stop_reason))
+        parser.finish()
     }
 }
 
@@ -356,13 +370,10 @@ mod tests {
 
     #[test]
     fn empty_text_blocks_filtered() {
-        // Placeholder blocks (from unknown SSE content types like thinking)
-        // should be filtered out before returning from send_message.
-        // This tests the retain filter logic directly.
         let mut blocks = vec![
             ContentBlock::Text {
                 text: String::new(),
-            }, // placeholder for unknown type
+            },
             ContentBlock::Text {
                 text: "real content".into(),
             },
@@ -373,11 +384,271 @@ mod tests {
             },
             ContentBlock::Text {
                 text: String::new(),
-            }, // another placeholder
+            },
         ];
         blocks.retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
         assert_eq!(blocks.len(), 2);
         assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "real content"));
         assert!(matches!(&blocks[1], ContentBlock::ToolUse { .. }));
+    }
+
+    // --- SSE parser tests ---
+
+    /// Helper: feed lines into an SseParser and return the result.
+    fn parse_sse(lines: &[&str]) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
+        let mut parser = SseParser::default();
+        for line in lines {
+            parser.process_line(line)?;
+        }
+        parser.finish()
+    }
+
+    #[test]
+    fn sse_text_response() {
+        let (blocks, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+            r#"event: message_stop"#,
+            r#"data: {"type":"message_stop"}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "Hello world"));
+    }
+
+    #[test]
+    fn sse_tool_use_response() {
+        let (blocks, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"comm"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"and\":\"ls\"}"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+            r#"event: message_stop"#,
+            r#"data: {"type":"message_stop"}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::ToolUse);
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::ToolUse { id, name, input } = &blocks[0] {
+            assert_eq!(id, "t1");
+            assert_eq!(name, "bash");
+            assert_eq!(input["command"], "ls");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn sse_mixed_text_and_tool() {
+        let (blocks, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"read_file"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"src/main.rs\"}"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::ToolUse);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "Let me check"));
+        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "read_file"));
+    }
+
+    #[test]
+    fn sse_unknown_block_type_filtered() {
+        // Unknown block types (like thinking) should produce placeholder blocks
+        // that are filtered out in finish()
+        let (blocks, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"visible"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "visible"));
+    }
+
+    #[test]
+    fn sse_missing_index_skipped() {
+        // Delta events without an index field should be silently skipped
+        let (blocks, _) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"no index"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"has index"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "has index"));
+    }
+
+    #[test]
+    fn sse_out_of_bounds_index_safe() {
+        // Index beyond blocks array should not panic
+        let (blocks, _) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":99,"delta":{"type":"text_delta","text":"orphan"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "ok"));
+    }
+
+    #[test]
+    fn sse_stream_error_event() {
+        let err = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: error"#,
+            r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        ]);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("Overloaded"), "error message: {msg}");
+    }
+
+    #[test]
+    fn sse_incomplete_stream_detected() {
+        // Stream ends without message_delta or message_stop — connection dropped
+        let err = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}"#,
+        ]);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("stop_reason"));
+    }
+
+    #[test]
+    fn sse_message_stop_fallback() {
+        // message_stop without message_delta should default to EndTurn
+        let (_, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_stop"#,
+            r#"data: {"type":"message_stop"}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+    }
+
+    #[test]
+    fn sse_max_tokens_stop() {
+        let (_, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"truncated"}}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn sse_corrupt_tool_json_produces_null_input() {
+        let (blocks, _) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"broken"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::ToolUse { input, .. } = &blocks[0] {
+            assert!(input.is_null(), "corrupt JSON should produce null input");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn sse_empty_lines_ignored() {
+        let mut parser = SseParser::default();
+        parser.process_line("").unwrap();
+        parser.process_line("").unwrap();
+        // Feeding a complete response after empty lines
+        parser.process_line("event: message_delta").unwrap();
+        parser
+            .process_line(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
+            .unwrap();
+        parser.process_line("event: message_stop").unwrap();
+        parser
+            .process_line(r#"data: {"type":"message_stop"}"#)
+            .unwrap();
+        let (blocks, stop) = parser.finish().unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn sse_non_sse_lines_ignored() {
+        let mut parser = SseParser::default();
+        parser.process_line(":comment").unwrap();
+        parser.process_line("random garbage").unwrap();
+        parser.process_line("event: message_delta").unwrap();
+        parser
+            .process_line(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
+            .unwrap();
+        let (_, stop) = parser.finish().unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
     }
 }

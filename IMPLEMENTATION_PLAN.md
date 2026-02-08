@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~699 production lines across 3 source files with 66 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~698 production lines across 3 source files with 79 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 66 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 79 unit tests.
 
 File structure:
-- src/main.rs (~231 production lines)
-- src/api.rs (~218 production lines)
-- src/tools/mod.rs (~250 production lines)
-- Total: ~699 production lines + ~924 test lines
+- src/main.rs (~228 production lines)
+- src/api.rs (~232 production lines)
+- src/tools/mod.rs (~238 production lines)
+- Total: ~698 production lines + ~924 test lines
 
 ## Architectural Decisions
 
@@ -78,6 +78,16 @@ API errors must not corrupt conversation alternation. The Anthropic API requires
 
 rustfmt actively expands compressed single-line patterns. Single-line `if x { continue; }` blocks, single-line struct bodies, and compressed multi-condition guards all get expanded by `cargo fmt`. The only reliable way to reduce line count is through structural changes (combining match arms, extracting helpers for duplicated patterns, using combinators instead of match expressions) — not cosmetic compression that rustfmt will undo.
 
+SseParser extraction enables testability without HTTP mocks. By pulling the SSE event processing out of `send_message` into a struct with `process_line()` and `finish()` methods, the parser state machine becomes directly testable. This added ~15 net production lines but enabled 13 new SSE tests covering text responses, tool use, mixed blocks, unknown block types, missing indices, out-of-bounds indices, stream errors, incomplete streams, message_stop fallback, max_tokens, corrupt JSON, empty lines, and non-SSE lines.
+
+`list_files` output must be sorted for deterministic results. `fs::read_dir` returns entries in arbitrary filesystem order, unlike Go's `filepath.Walk` which returns lexical order. Adding `files.sort()` ensures consistent output across runs and platforms.
+
+Tool loop iteration limit prevents runaway agent behavior. A safety limit of 50 iterations on the inner tool dispatch loop catches infinite loops where Claude keeps requesting tools. The limit is high enough for complex multi-step tasks but prevents unbounded API costs.
+
+Generic `drain<R: Read>` helper eliminates bash stdout/stderr thread spawn duplication. Both stdout and stderr need identical drain-in-thread logic but have different types (`ChildStdout` vs `ChildStderr`). A generic inner function handles both with a single implementation.
+
+`match` expression for edit_file occurrence counting is more compact than sequential if-else. `match content.matches(old_str).count() { 0 => ..., 1 => {}, n => ... }` saves 2 lines over separate `if count == 0` / `if count > 1` checks while remaining equally readable.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -100,7 +110,8 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target <700 met at ~699 actual through SSE match arm consolidation, combinator-style stop_reason handling, truncation helper extraction, and thread spawn compression.
+- Line target <700 maintained at ~698 despite SseParser extraction (+15 net lines) through comment compression, generic drain helper, and match expression compression.
+- SSE parser now has 13 unit tests covering the full event processing state machine.
 
 ## Verification Checklist
 
@@ -138,4 +149,7 @@ The specification has been updated to reflect implementation decisions:
 [x] cargo clippy -- -D warnings passes
 [x] cargo build --release passes
 [x] API error recovery: pop trailing User message to maintain alternation invariant
-[x] cargo test passes (66 unit tests)
+[x] SSE parser extracted into testable SseParser struct with 13 tests
+[x] list_files output sorted for deterministic results
+[x] Tool loop iteration limit (50) prevents runaway agent behavior
+[x] cargo test passes (79 unit tests)

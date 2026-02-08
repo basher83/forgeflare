@@ -7,9 +7,9 @@ use std::io::{IsTerminal, Write};
 use tools::{all_tool_schemas, dispatch_tool};
 
 const MAX_CONVERSATION_BYTES: usize = 720_000; // ~180K tokens at ~4 chars/token
+const MAX_TOOL_ITERATIONS: usize = 50; // Safety limit for tool dispatch loop
 
-/// Trim conversation to stay within token budget. Removes oldest exchanges first,
-/// preserving tool_use/tool_result pairing by only cutting at user-text boundaries.
+/// Trim conversation at exchange boundaries, preserving tool_use/tool_result pairs.
 fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
     let sizes: Vec<usize> = conversation
         .iter()
@@ -19,7 +19,6 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
     if total <= max_bytes {
         return;
     }
-    // Exchange boundaries: user messages starting with Text (not ToolResult)
     let boundaries: Vec<usize> = conversation
         .iter()
         .enumerate()
@@ -33,7 +32,6 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
         .collect();
     let keep_last = boundaries.len().saturating_sub(1);
     if keep_last == 0 {
-        // Single exchange over budget — truncate oversized content blocks
         truncate_oversized_blocks(conversation, max_bytes);
         return;
     }
@@ -47,18 +45,14 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
             return;
         }
     }
-    // Last exchange still over budget — trim to it anyway to avoid unbounded growth
     eprintln!(
         "\x1b[93m[context]\x1b[0m Trimmed to last exchange ({} messages dropped)",
         boundaries[keep_last]
     );
     conversation.drain(..boundaries[keep_last]);
-    // Safety valve: if a single exchange exceeds budget (e.g. 1MB read_file result),
-    // truncate the largest text/tool_result content blocks to fit
     truncate_oversized_blocks(conversation, max_bytes);
 }
 
-/// Last-resort truncation of oversized content blocks when a single exchange exceeds budget.
 fn truncate_oversized_blocks(conversation: &mut [Message], max_bytes: usize) {
     let total: usize = conversation
         .iter()
@@ -143,7 +137,14 @@ async fn main() {
             }],
         });
         // Inner loop: send → dispatch tools → repeat (R8: subagent dispatch integration point)
+        let mut tool_iterations = 0usize;
         loop {
+            if tool_iterations >= MAX_TOOL_ITERATIONS {
+                eprintln!(
+                    "\x1b[93m[warning]\x1b[0m Tool loop hit {MAX_TOOL_ITERATIONS} iterations, breaking to prevent runaway"
+                );
+                break;
+            }
             if cli.verbose {
                 eprintln!(
                     "[verbose] Sending message, conversation len: {}",
@@ -158,8 +159,7 @@ async fn main() {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("\x1b[91mError\x1b[0m: {e}");
-                    // Pop trailing User message to maintain alternation invariant,
-                    // otherwise the next user input creates consecutive User messages (400).
+                    // Pop trailing User message to maintain alternation invariant
                     if conversation
                         .last()
                         .is_some_and(|m| matches!(m.role, Role::User))
@@ -182,7 +182,6 @@ async fn main() {
             if stop_reason != StopReason::ToolUse {
                 if stop_reason == StopReason::MaxTokens {
                     eprintln!("\x1b[93m[warning]\x1b[0m Response truncated (max_tokens reached)");
-                    // Strip partial ToolUse blocks (null input) to prevent corrupt future API calls
                     if let Some(msg) = conversation.last_mut() {
                         msg.content.retain(|b| {
                             !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null())
@@ -194,20 +193,17 @@ async fn main() {
             let mut tool_results: Vec<ContentBlock> = Vec::new();
             for block in &response {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    eprintln!(
-                        "\x1b[96mtool\x1b[0m: {name}{}",
-                        if cli.verbose {
-                            format!("({input})")
-                        } else {
-                            String::new()
-                        }
-                    );
+                    if cli.verbose {
+                        eprintln!("\x1b[96mtool\x1b[0m: {name}({input})");
+                    } else {
+                        eprintln!("\x1b[96mtool\x1b[0m: {name}");
+                    }
                     let result = dispatch_tool(name, input.clone(), id);
                     if cli.verbose
                         && let ContentBlock::ToolResult { ref content, .. } = result
                     {
-                        let truncated: String = content.chars().take(200).collect();
-                        eprintln!("\x1b[92mresult\x1b[0m: {truncated}");
+                        let t: String = content.chars().take(200).collect();
+                        eprintln!("\x1b[92mresult\x1b[0m: {t}");
                     }
                     tool_results.push(result);
                 }
@@ -215,17 +211,18 @@ async fn main() {
             if tool_results.is_empty() {
                 break;
             }
+            tool_iterations += 1;
             if cli.verbose {
-                eprintln!("[verbose] Sending {} tool results", tool_results.len());
+                eprintln!(
+                    "[verbose] Sending {} tool results (iteration {tool_iterations})",
+                    tool_results.len()
+                );
             }
             conversation.push(Message {
                 role: Role::User,
                 content: tool_results,
             });
         }
-    }
-    if cli.verbose {
-        eprintln!("[verbose] Chat session ended");
     }
 }
 
