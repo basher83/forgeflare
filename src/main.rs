@@ -208,6 +208,16 @@ async fn main() {
             let mut tool_results: Vec<ContentBlock> = Vec::new();
             for block in &response {
                 if let ContentBlock::ToolUse { id, name, input } = block {
+                    if input.is_null() {
+                        let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
+                        eprintln!("{c}[warning]{r} Tool {name}: corrupt input (null)");
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: "tool input was corrupt (JSON parse failed)".into(),
+                            is_error: Some(true),
+                        });
+                        continue;
+                    }
                     let (c, r) = (color("\x1b[96m"), color("\x1b[0m"));
                     if cli.verbose {
                         eprintln!("{c}tool{r}: {name}({input})");
@@ -530,5 +540,12 @@ mod tests {
         recover_conversation(&mut conv);
         assert_eq!(conv.len(), 2);
         assert!(matches!(conv.last().unwrap().role, Role::Assistant));
+    }
+
+    #[test]
+    fn api_error_recovery_empty_conversation() {
+        let mut conv: Vec<Message> = Vec::new();
+        recover_conversation(&mut conv); // should not panic
+        assert!(conv.is_empty());
     }
 }

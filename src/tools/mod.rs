@@ -176,6 +176,11 @@ fn edit_exec(input: Value) -> Result<String, String> {
         fs::write(path, new_str).map_err(|e| format!("write: {e}"))?;
         return Ok(format!("Created {path_s}"));
     }
+    let meta = fs::metadata(path).map_err(|e| format!("{path_s}: {e}"))?;
+    if meta.len() > MAX_READ_SIZE {
+        let (size, max) = (meta.len() / 1024, MAX_READ_SIZE / 1024);
+        return Err(format!("{path_s}: {size}KB exceeds {max}KB edit limit"));
+    }
     let content = fs::read_to_string(path).map_err(|e| format!("{path_s}: {e}"))?;
     if old_str.is_empty() {
         fs::write(path, format!("{content}{new_str}")).map_err(|e| format!("write: {e}"))?;
@@ -665,5 +670,35 @@ mod tests {
         );
         assert!(result.is_ok());
         assert!(result.unwrap().contains("fn all_tool_schemas"));
+    }
+
+    #[test]
+    fn dispatch_null_input_returns_error() {
+        // Corrupt tool_use blocks from SSE parse failures have Value::Null input.
+        // Tools with required parameters should return is_error.
+        // list_files has no required parameters, so null input succeeds (lists cwd).
+        for name in ["read_file", "bash", "edit_file", "code_search"] {
+            let block = dispatch_tool(name, Value::Null, "null-test");
+            if let ContentBlock::ToolResult { is_error, .. } = &block {
+                assert_eq!(*is_error, Some(true), "{name} should error on null input");
+            } else {
+                panic!("expected ToolResult for {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn edit_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        let data = "x".repeat(2 * 1024 * 1024); // 2MB > 1MB limit
+        fs::write(&path, &data).unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "x",
+            "new_str": "y"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds"));
     }
 }
