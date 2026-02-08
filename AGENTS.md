@@ -33,7 +33,7 @@ src/
   tools/mod.rs    — 5 tools with tools! macro (read, list, bash, edit, search)
 ```
 
-81 tests
+84 tests
 
 ## Dependencies
 

@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~639 production lines across 3 source files with 84 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/).
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~685 production lines across 3 source files with 84 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/).
 
 Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 84 unit tests.
 
 File structure:
-- src/main.rs (~219 production lines)
-- src/api.rs (~217 production lines)
-- src/tools/mod.rs (~203 production lines)
-- Total: ~639 production lines
+- src/main.rs (~241 production lines)
+- src/api.rs (~223 production lines)
+- src/tools/mod.rs (~221 production lines)
+- Total: ~685 production lines
 
 ## Architectural Decisions
 
@@ -128,7 +128,7 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target <700 maintained at ~639 after hardening (corrupt tool dispatch, edit size guard).
+- Line target <700 maintained at ~685 after hardening (corrupt tool dispatch, edit size guard).
 - SSE parser now has 14 unit tests covering the full event processing state machine.
 - Tool dispatch now handles corrupt tool_use blocks with null input by sending error tool_results (maintains API pairing invariant).
 
