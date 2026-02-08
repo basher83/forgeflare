@@ -9,8 +9,6 @@ pub enum AgentError {
     Api(#[from] reqwest::Error),
     #[error("JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("IO: {0}")]
-    Io(#[from] std::io::Error),
     #[error("ANTHROPIC_API_KEY not set")]
     MissingApiKey,
     #[error("stream: {0}")]
@@ -50,17 +48,6 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSchema {
-    pub name: String,
-    pub description: String,
-    pub input_schema: Value,
-}
-
-pub struct MessageResponse {
-    pub content: Vec<ContentBlock>,
-}
-
 pub struct AnthropicClient {
     client: reqwest::Client,
     api_key: String,
@@ -78,9 +65,9 @@ impl AnthropicClient {
     pub async fn send_message(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[Value],
         model: &str,
-    ) -> Result<MessageResponse, AgentError> {
+    ) -> Result<Vec<ContentBlock>, AgentError> {
         let body = serde_json::json!({
             "model": model, "max_tokens": 8192, "stream": true,
             "system": "You are a coding agent. You have tools to read files, list directories, run bash commands, edit files, and search code. Use them to help the user with software engineering tasks. Think step by step. When editing code, read the file first to understand context.",
@@ -96,86 +83,76 @@ impl AnthropicClient {
             .send()
             .await?;
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let (status, body) = (response.status(), response.text().await.unwrap_or_default());
             return Err(AgentError::StreamParse(format!(
                 "API returned {status}: {body}"
             )));
         }
 
         let mut stream = response.bytes_stream();
-        let (mut buffer, mut current_event) = (String::new(), String::new());
-        let mut content_blocks: Vec<ContentBlock> = Vec::new();
-        let mut json_fragments: Vec<String> = Vec::new();
+        let (mut buf, mut event) = (String::new(), String::new());
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        let mut fragments: Vec<String> = Vec::new();
 
         while let Some(chunk) = stream.next().await {
-            buffer.push_str(&String::from_utf8_lossy(&chunk?));
-            while let Some(nl) = buffer.find('\n') {
-                let line = buffer[..nl].trim_end().to_string();
-                buffer = buffer[nl + 1..].to_string();
+            buf.push_str(&String::from_utf8_lossy(&chunk?));
+            while let Some(nl) = buf.find('\n') {
+                let line = buf[..nl].trim_end().to_string();
+                buf = buf[nl + 1..].to_string();
                 if line.is_empty() {
                     continue;
                 }
                 if let Some(ev) = line.strip_prefix("event: ") {
-                    current_event = ev.to_string();
+                    event = ev.into();
                     continue;
                 }
                 let Some(data) = line.strip_prefix("data: ") else {
                     continue;
                 };
-                match current_event.as_str() {
+                let p: Value = serde_json::from_str(data)?;
+                match event.as_str() {
                     "content_block_start" => {
-                        let parsed: Value = serde_json::from_str(data)?;
-                        let block = &parsed["content_block"];
-                        match block["type"].as_str() {
-                            Some("text") => content_blocks.push(ContentBlock::Text {
+                        let b = &p["content_block"];
+                        match b["type"].as_str() {
+                            Some("text") => blocks.push(ContentBlock::Text {
                                 text: String::new(),
                             }),
-                            Some("tool_use") => content_blocks.push(ContentBlock::ToolUse {
-                                id: block["id"].as_str().unwrap_or_default().to_string(),
-                                name: block["name"].as_str().unwrap_or_default().to_string(),
+                            Some("tool_use") => blocks.push(ContentBlock::ToolUse {
+                                id: b["id"].as_str().unwrap_or_default().into(),
+                                name: b["name"].as_str().unwrap_or_default().into(),
                                 input: Value::Null,
                             }),
                             _ => {}
                         }
-                        json_fragments.push(String::new());
+                        fragments.push(String::new());
                     }
                     "content_block_delta" => {
-                        let parsed: Value = serde_json::from_str(data)?;
-                        let idx = parsed["index"].as_u64().unwrap_or(0) as usize;
-                        let delta = &parsed["delta"];
+                        let (idx, delta) = (p["index"].as_u64().unwrap_or(0) as usize, &p["delta"]);
                         match delta["type"].as_str() {
                             Some("text_delta") => {
                                 let t = delta["text"].as_str().unwrap_or_default();
-                                print!("{t}");
+                                print!("\x1b[93m{t}\x1b[0m");
                                 std::io::stdout().flush().ok();
-                                if let Some(ContentBlock::Text { text }) =
-                                    content_blocks.get_mut(idx)
-                                {
+                                if let Some(ContentBlock::Text { text }) = blocks.get_mut(idx) {
                                     text.push_str(t);
                                 }
                             }
                             Some("input_json_delta") => {
-                                if let Some(frag) = json_fragments.get_mut(idx) {
-                                    frag.push_str(
-                                        delta["partial_json"].as_str().unwrap_or_default(),
-                                    );
+                                if let Some(f) = fragments.get_mut(idx) {
+                                    f.push_str(delta["partial_json"].as_str().unwrap_or_default());
                                 }
                             }
                             _ => {}
                         }
                     }
                     "content_block_stop" => {
-                        let parsed: Value = serde_json::from_str(data)?;
-                        let idx = parsed["index"].as_u64().unwrap_or(0) as usize;
-                        if let Some(ContentBlock::ToolUse { input, .. }) =
-                            content_blocks.get_mut(idx)
-                            && let Some(frag) = json_fragments.get(idx)
-                            && !frag.is_empty()
+                        let idx = p["index"].as_u64().unwrap_or(0) as usize;
+                        if let Some(ContentBlock::ToolUse { input, .. }) = blocks.get_mut(idx)
+                            && let Some(f) = fragments.get(idx).filter(|f| !f.is_empty())
                         {
-                            *input = serde_json::from_str(frag).unwrap_or(Value::Null);
+                            *input = serde_json::from_str(f).unwrap_or(Value::Null);
                         }
-                        if matches!(content_blocks.get(idx), Some(ContentBlock::Text { .. })) {
+                        if matches!(blocks.get(idx), Some(ContentBlock::Text { .. })) {
                             println!();
                         }
                     }
@@ -183,9 +160,7 @@ impl AnthropicClient {
                 }
             }
         }
-        Ok(MessageResponse {
-            content: content_blocks,
-        })
+        Ok(blocks)
     }
 }
 
@@ -285,15 +260,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_schema_serialization() {
-        let schema = ToolSchema {
-            name: "test".into(),
-            description: "A test tool".into(),
-            input_schema: serde_json::json!({"type": "object"}),
-        };
-        let json = serde_json::to_value(&schema).unwrap();
-        assert_eq!(json["name"], "test");
-        assert_eq!(json["input_schema"]["type"], "object");
+    fn tool_schema_as_value() {
+        let schema = serde_json::json!({
+            "name": "test",
+            "description": "A test tool",
+            "input_schema": {"type": "object"}
+        });
+        assert_eq!(schema["name"], "test");
+        assert_eq!(schema["input_schema"]["type"], "object");
     }
 
     #[test]

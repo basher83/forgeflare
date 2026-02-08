@@ -4,7 +4,7 @@ mod tools;
 use api::{AnthropicClient, ContentBlock, Message, Role};
 use clap::Parser;
 use std::io::Write;
-use tools::{all_tools, dispatch_tool, tools_as_schemas};
+use tools::{all_tool_schemas, dispatch_tool};
 
 #[derive(Parser)]
 #[command(name = "agent", about = "Rust coding agent")]
@@ -18,15 +18,14 @@ struct Cli {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let client = match AnthropicClient::new() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-    };
-    let tools = all_tools();
-    let schemas = tools_as_schemas(&tools);
+    let client = AnthropicClient::new().unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
+    let schemas = all_tool_schemas();
+    if cli.verbose {
+        eprintln!("[verbose] Initialized {} tools", schemas.len());
+    }
     println!("Chat with Claude (type 'exit' or Ctrl-D to quit)");
     let mut conversation: Vec<Message> = Vec::new();
     let stdin = std::io::stdin();
@@ -34,13 +33,8 @@ async fn main() {
         print!("\x1b[94mYou\x1b[0m: ");
         std::io::stdout().flush().ok();
         let mut input = String::new();
-        match stdin.read_line(&mut input) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Input error: {e}");
-                break;
-            }
+        if stdin.read_line(&mut input).map_or(true, |n| n == 0) {
+            break;
         }
         let input = input.trim();
         if input.is_empty() {
@@ -49,37 +43,52 @@ async fn main() {
         if input == "exit" {
             break;
         }
+        if cli.verbose {
+            eprintln!("[verbose] User: {input}");
+        }
         conversation.push(Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: input.to_string(),
             }],
         });
-        let response = match client
-            .send_message(&conversation, &schemas, &cli.model)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("\x1b[91mError\x1b[0m: {e}");
-                continue;
-            }
-        };
-        conversation.push(Message {
-            role: Role::Assistant,
-            content: response.content.clone(),
-        });
-        let mut current_response = response;
+        // Inner loop: send message, dispatch tools, repeat until no tool_use
         loop {
+            if cli.verbose {
+                eprintln!(
+                    "[verbose] Sending message, conversation length: {}",
+                    conversation.len()
+                );
+            }
+            let response = match client
+                .send_message(&conversation, &schemas, &cli.model)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("\x1b[91mError\x1b[0m: {e}");
+                    break;
+                }
+            };
+            if cli.verbose {
+                eprintln!("[verbose] Received {} content blocks", response.len());
+            }
+            conversation.push(Message {
+                role: Role::Assistant,
+                content: response.clone(),
+            });
             let mut tool_results: Vec<ContentBlock> = Vec::new();
-            for block in &current_response.content {
+            for block in &response {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    if cli.verbose {
-                        eprintln!("\x1b[96mtool\x1b[0m: {name}({input})");
-                    } else {
-                        eprintln!("\x1b[96mtool\x1b[0m: {name}");
-                    }
-                    let result = dispatch_tool(&tools, name, input.clone(), id);
+                    eprintln!(
+                        "\x1b[96mtool\x1b[0m: {name}{}",
+                        if cli.verbose {
+                            format!("({input})")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    let result = dispatch_tool(name, input.clone(), id);
                     if cli.verbose
                         && let ContentBlock::ToolResult { ref content, .. } = result
                     {
@@ -94,25 +103,19 @@ async fn main() {
             if tool_results.is_empty() {
                 break;
             }
+            if cli.verbose {
+                eprintln!(
+                    "[verbose] Sending {} tool results back to Claude",
+                    tool_results.len()
+                );
+            }
             conversation.push(Message {
                 role: Role::User,
                 content: tool_results,
             });
-            current_response = match client
-                .send_message(&conversation, &schemas, &cli.model)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("\x1b[91mError\x1b[0m: {e}");
-                    break;
-                }
-            };
-            conversation.push(Message {
-                role: Role::Assistant,
-                content: current_response.content.clone(),
-            });
         }
     }
-    // TODO: subagent dispatch integration point (spec R8)
+    if cli.verbose {
+        eprintln!("[verbose] Chat session ended");
+    }
 }

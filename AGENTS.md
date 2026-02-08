@@ -26,18 +26,14 @@ Binary: `agent`
 
 ## Project Structure
 
-```typescript
+```
 src/
   main.rs         — CLI loop, user interface
   api.rs          — Anthropic client (reqwest + SSE)
-  tools/
-    mod.rs        — Tool registry (merged from registry.rs)
-    read.rs       — read_file tool
-    list.rs       — list_files tool
-    bash.rs       — bash tool
-    edit.rs       — edit_file tool
-    search.rs     — ripgrep wrapper
+  tools/mod.rs    — 5 tools with tools! macro (read, list, bash, edit, search)
 ```
+
+42 tests
 
 ## Dependencies
 
@@ -48,13 +44,11 @@ src/
 - serde, serde_json
 - tokio
 - clap
-- anyhow
 
 ## Code Patterns
 
 **Error Handling**
 - Define error types in each module with `thiserror`
-- Use `anyhow` for propagation in `main.rs`
 - Tool errors returned as text in Anthropic API responses
 
 **Async**
