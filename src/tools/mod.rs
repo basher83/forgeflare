@@ -90,18 +90,10 @@ fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> st
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let rel = path
-            .strip_prefix(base)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .to_string();
+        let rel = path.strip_prefix(base).unwrap_or(&path).to_string_lossy();
         if entry.file_type()?.is_dir() {
-            if SKIP_DIRS.contains(&name.as_str()) {
+            let name = path.file_name().unwrap_or_default();
+            if SKIP_DIRS.iter().any(|s| *s == name) {
                 continue;
             }
             files.push(format!("{rel}/"));
@@ -109,10 +101,20 @@ fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> st
                 walk(base, &path, files, recursive)?;
             }
         } else {
-            files.push(rel);
+            files.push(rel.into_owned());
         }
     }
     Ok(())
+}
+
+/// Truncate a string at the nearest char boundary at or before `max` bytes, appending a marker.
+fn truncate_with_marker(s: &mut String, max: usize) {
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str("\n... (output truncated at 100KB)");
 }
 
 fn bash_exec(input: Value) -> Result<String, String> {
@@ -129,21 +131,21 @@ fn bash_exec(input: Value) -> Result<String, String> {
         .map_err(|e| format!("exec failed: {e}"))?;
     // Drain stdout/stderr in threads to prevent pipe buffer deadlock.
     // If we wait() before reading, commands producing >64KB block on the full pipe.
-    let stdout_handle = child.stdout.take().map(|out| {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let mut reader = out;
-            reader.read_to_string(&mut buf).ok();
-            buf
-        })
+    let out_h = std::thread::spawn({
+        let mut out = child.stdout.take().unwrap();
+        move || {
+            let mut b = String::new();
+            out.read_to_string(&mut b).ok();
+            b
+        }
     });
-    let stderr_handle = child.stderr.take().map(|err| {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let mut reader = err;
-            reader.read_to_string(&mut buf).ok();
-            buf
-        })
+    let err_h = std::thread::spawn({
+        let mut err = child.stderr.take().unwrap();
+        move || {
+            let mut b = String::new();
+            err.read_to_string(&mut b).ok();
+            b
+        }
     });
     let status = match child
         .wait_timeout(BASH_TIMEOUT)
@@ -156,33 +158,18 @@ fn bash_exec(input: Value) -> Result<String, String> {
             return Err("Command timed out after 120s and was killed".into());
         }
     };
-    let stdout = stdout_handle
-        .and_then(|h| h.join().ok())
-        .unwrap_or_default();
-    let stderr = stderr_handle
-        .and_then(|h| h.join().ok())
-        .unwrap_or_default();
+    let stdout = out_h.join().unwrap_or_default();
+    let stderr = err_h.join().unwrap_or_default();
     let mut output = format!("{stdout}{stderr}").trim().to_string();
     if !status.success() {
-        let msg = format!("Command failed ({status}): {output}");
-        // Truncate error output too
+        let mut msg = format!("Command failed ({status}): {output}");
         if msg.len() > MAX_BASH_OUTPUT {
-            let mut end = MAX_BASH_OUTPUT;
-            while !msg.is_char_boundary(end) {
-                end -= 1;
-            }
-            return Err(format!("{}\n... (output truncated at 100KB)", &msg[..end]));
+            truncate_with_marker(&mut msg, MAX_BASH_OUTPUT);
         }
         return Err(msg);
     }
     if output.len() > MAX_BASH_OUTPUT {
-        // Find nearest char boundary at or before MAX_BASH_OUTPUT
-        let mut end = MAX_BASH_OUTPUT;
-        while !output.is_char_boundary(end) {
-            end -= 1;
-        }
-        output.truncate(end);
-        output.push_str("\n... (output truncated at 100KB)");
+        truncate_with_marker(&mut output, MAX_BASH_OUTPUT);
     }
     Ok(output)
 }

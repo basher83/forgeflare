@@ -129,20 +129,18 @@ impl AnthropicClient {
                 match event.as_str() {
                     "content_block_start" => {
                         let b = &p["content_block"];
-                        match b["type"].as_str() {
-                            Some("text") => blocks.push(ContentBlock::Text {
-                                text: String::new(),
-                            }),
-                            Some("tool_use") => blocks.push(ContentBlock::ToolUse {
+                        if b["type"].as_str() == Some("tool_use") {
+                            blocks.push(ContentBlock::ToolUse {
                                 id: b["id"].as_str().unwrap_or_default().into(),
                                 name: b["name"].as_str().unwrap_or_default().into(),
                                 input: Value::Null,
-                            }),
-                            // Unknown block types (thinking, server_tool_use, future types):
-                            // push placeholder to keep blocks[] and fragments[] indices aligned
-                            _ => blocks.push(ContentBlock::Text {
+                            });
+                        } else {
+                            // Text and unknown types (thinking, server_tool_use, etc.):
+                            // placeholder keeps blocks[] and fragments[] indices aligned
+                            blocks.push(ContentBlock::Text {
                                 text: String::new(),
-                            }),
+                            });
                         }
                         fragments.push(String::new());
                     }
@@ -175,15 +173,10 @@ impl AnthropicClient {
                         if let Some(ContentBlock::ToolUse { input, .. }) = blocks.get_mut(idx)
                             && let Some(f) = fragments.get(idx).filter(|f| !f.is_empty())
                         {
-                            match serde_json::from_str(f) {
-                                Ok(v) => *input = v,
-                                Err(e) => {
-                                    eprintln!(
-                                        "\x1b[91m[warning]\x1b[0m Corrupt tool input (JSON parse failed: {e})"
-                                    );
-                                    *input = Value::Null;
-                                }
-                            }
+                            *input = serde_json::from_str(f).unwrap_or_else(|e| {
+                                eprintln!("\x1b[91m[warning]\x1b[0m Corrupt tool input (JSON parse failed: {e})");
+                                Value::Null
+                            });
                         }
                         if let Some(ContentBlock::Text { text }) = blocks.get(idx)
                             && !text.is_empty()
@@ -211,16 +204,14 @@ impl AnthropicClient {
         // Filter out placeholder blocks from unknown SSE content types (e.g. thinking)
         blocks.retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
         // Detect incomplete streams: if message_delta never delivered a stop_reason,
-        // the connection was dropped mid-stream
-        let stop_reason = match stop_reason {
-            Some(r) => r,
-            None if message_complete => StopReason::EndTurn, // defensive: stop received but no delta
-            None => {
-                return Err(AgentError::StreamParse(
+        // the connection was dropped mid-stream (message_complete is a defensive fallback)
+        let stop_reason = stop_reason
+            .or(message_complete.then_some(StopReason::EndTurn))
+            .ok_or_else(|| {
+                AgentError::StreamParse(
                     "stream ended without stop_reason (connection dropped?)".into(),
-                ));
-            }
-        };
+                )
+            })?;
         Ok((blocks, stop_reason))
     }
 }

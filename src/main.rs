@@ -158,9 +158,8 @@ async fn main() {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("\x1b[91mError\x1b[0m: {e}");
-                    // Remove the last user message to maintain alternation invariant.
-                    // Without this, the next user input creates consecutive User messages
-                    // which the API rejects with 400.
+                    // Pop trailing User message to maintain alternation invariant,
+                    // otherwise the next user input creates consecutive User messages (400).
                     if conversation
                         .last()
                         .is_some_and(|m| matches!(m.role, Role::User))
@@ -180,17 +179,15 @@ async fn main() {
                 role: Role::Assistant,
                 content: response.clone(),
             });
-            if stop_reason == StopReason::EndTurn {
-                break;
-            }
-            if stop_reason == StopReason::MaxTokens {
-                eprintln!("\x1b[93m[warning]\x1b[0m Response truncated (max_tokens reached)");
-                // Remove partial ToolUse blocks with null input from conversation
-                // to prevent corrupt tool_use blocks in future API calls
-                if let Some(msg) = conversation.last_mut() {
-                    msg.content.retain(
-                        |b| !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null()),
-                    );
+            if stop_reason != StopReason::ToolUse {
+                if stop_reason == StopReason::MaxTokens {
+                    eprintln!("\x1b[93m[warning]\x1b[0m Response truncated (max_tokens reached)");
+                    // Strip partial ToolUse blocks (null input) to prevent corrupt future API calls
+                    if let Some(msg) = conversation.last_mut() {
+                        msg.content.retain(|b| {
+                            !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null())
+                        });
+                    }
                 }
                 break;
             }
