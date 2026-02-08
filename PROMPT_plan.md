@@ -10,6 +10,6 @@
 
 IMPORTANT: Plan only. Do NOT implement anything. Do NOT assume functionality is missing; confirm with code search first. The Go source in `reference/` is the pin — understand it deeply, then pattern-match the Rust implementation against it.
 
-ULTIMATE GOAL: Build a unified Rust coding agent — single binary with streaming Anthropic API, 6 tools (read, list, bash, edit, search, registry), under 500 lines total. The agent should follow the Go source's event loop pattern: user input → API call → check response → dispatch tools → send results → repeat. Streaming from day 1.
+ULTIMATE GOAL: Build a unified Rust coding agent — single binary with streaming Anthropic API, 5 tools (read, list, bash, edit, search), under 700 production lines. The agent should follow the Go source's event loop pattern: user input → API call → check response → dispatch tools → send results → repeat. Streaming from day 1.
 
-Consider missing elements: bare API client structure, streaming SSE handling, tool registry pattern, each of the 6 tools, error handling, CLI interface. Plan accordingly.
+Consider missing elements: bare API client structure, streaming SSE handling, tool registry pattern, each of the 5 tools, error handling, CLI interface. Plan accordingly.

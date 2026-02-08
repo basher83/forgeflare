@@ -2,4 +2,4 @@
 
 | Status | Spec | Purpose | Code Location |
 |--------|------|---------|---|
-| Active | `coding-agent.md` | Unified Rust agent: single binary, streaming, 5 tools, <600 lines | `src/` |
+| Active | `coding-agent.md` | Unified Rust agent: single binary, streaming, 5 tools, <700 lines | `src/` |
