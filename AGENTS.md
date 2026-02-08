@@ -1,17 +1,10 @@
 # Rust Coding Agent — Operations Guide
 
-## Current Work
-
-Building a unified Rust coding agent: single binary with streaming Anthropic API, 6 tools (read, list, bash, edit, search, registry), under 500 lines total.
-
 ## Build & Run
 
 ```bash
-# Build
-cargo build
-
-# Test
-cargo test
+# Run
+ANTHROPIC_API_KEY=... cargo run -- [--verbose] [--model claude-opus-4-6]
 
 # Lint
 cargo clippy -- -D warnings
@@ -19,32 +12,39 @@ cargo clippy -- -D warnings
 # Format
 cargo fmt --check
 
+# Build
+cargo build --release
+
 # Full validation
-cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test
+cargo fmt --check && cargo clippy -- -D warnings && cargo build
 ```
+
+Binary: `agent`
 
 ## Project Structure
 
-```
+```typescript
 src/
   main.rs         — CLI loop, user interface
   api.rs          — Anthropic client (reqwest + SSE)
   tools/
-    mod.rs        — Tool registry pattern
+    mod.rs        — Tool registry (merged from registry.rs)
     read.rs       — read_file tool
     list.rs       — list_files tool
     bash.rs       — bash tool
     edit.rs       — edit_file tool
     search.rs     — ripgrep wrapper
-    registry.rs   — tool introspection
-
-reference/
-  go-source/      — Go workshop code (pin)
-
-specs/
-  coding-agent.md — Unified agent specification
-  README.md       — Spec index
 ```
+
+## Dependencies
+
+- reqwest 0.13
+- thiserror 2
+- futures-util 0.3
+- serde, serde_json
+- tokio
+- clap
+- anyhow
 
 ## Code Patterns
 
@@ -73,7 +73,3 @@ specs/
 - `serde` + `serde_json` with derive macros
 - Tool dispatch follows Anthropic tool_use specification
 - Context accumulates in conversation array
-
-## Reference Material
-
-`reference/go-source/` contains the Go workshop (pin). Study `edit_tool.go` (lines 126-214) for the canonical event loop pattern. Same structure applies to Rust: API call → check response → dispatch tools → send results → repeat.
