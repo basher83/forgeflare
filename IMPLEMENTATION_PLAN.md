@@ -2,9 +2,9 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~675 production lines across 3 source files with 79 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~675 production lines across 3 source files with 80 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 79 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 80 unit tests.
 
 File structure:
 - src/main.rs (~232 production lines)
@@ -92,6 +92,8 @@ Piped stdin must be read as a single prompt, not line-by-line. The Go reference 
 
 `Option::take()` with match arms eliminates boolean flags for one-shot patterns. The piped stdin path originally used a `piped_done` boolean to track whether the single piped input had been consumed. Using `piped_input.take()` with `None if !interactive => break` is cleaner — the Option itself tracks consumption state, and the match arm pattern naturally handles both piped (one-shot) and interactive (continuous) modes.
 
+`truncate_with_marker` while loop was vulnerable to underflow. The `while !s.is_char_boundary(end) { end -= 1; }` pattern can panic on subtraction underflow if `end` reaches 0 without finding a boundary (impossible in practice for 100KB+ strings, but violates the no-panics contract). Replaced with `(0..=max).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)` which is both safe and consistent with the Range::find pattern already used in `truncate_oversized_blocks`.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -157,4 +159,4 @@ The specification has been updated to reflect implementation decisions:
 [x] list_files output sorted for deterministic results
 [x] Tool loop iteration limit (50) prevents runaway agent behavior
 [x] Piped stdin reads all input as single prompt (R5)
-[x] cargo test passes (79 unit tests)
+[x] cargo test passes (80 unit tests)

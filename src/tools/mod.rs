@@ -107,10 +107,10 @@ fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> st
 }
 
 fn truncate_with_marker(s: &mut String, max: usize) {
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = (0..=max)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
     s.truncate(end);
     s.push_str("\n... (output truncated at 100KB)");
 }
@@ -484,6 +484,15 @@ mod tests {
         let output = result.unwrap();
         assert!(output.contains("truncated at 100KB"));
         assert!(output.len() <= 110 * 1024); // 100KB + truncation message
+    }
+
+    #[test]
+    fn truncate_with_marker_respects_char_boundary() {
+        // 'é' is 2 bytes (0xC3 0xA9); truncating at byte 1 would split the char
+        let mut s = "é".repeat(100);
+        truncate_with_marker(&mut s, 5); // 5 bytes → 2 full 'é' chars (4 bytes)
+        assert!(s.starts_with("éé"));
+        assert!(s.contains("truncated at 100KB"));
     }
 
     // --- edit_file tests ---
