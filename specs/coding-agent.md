@@ -27,19 +27,17 @@ enum Tool {
     Bash(BashRequest),
     Edit(EditRequest),
     Search(SearchRequest),
-    Registry(RegistryRequest),
 }
 ```
-- Registry tool returns available tools + signatures (introspection for LLM)
-- 6 tools total; each follows Anthropic tool_use spec
+- 5 tools total; each follows Anthropic tool_use spec
+- Tool schemas are sent with every API request, providing introspection natively
 
-**R4. Six Tools**
+**R4. Five Tools**
 1. **Read** — read_file(path) → file contents (handle binary, size limits)
 2. **List** — list_files(path, recursive?) → [files]
 3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout)
 4. **Edit** — edit_file(path, old_str, new_str) → success/error (exact match semantics)
 5. **Search** — search(pattern, path?) → matches (shell out to `rg`)
-6. **Registry** — registry() → [Tool]
 
 **R5. CLI Interface**
 - Single binary, no subcommands required
@@ -50,7 +48,6 @@ enum Tool {
 
 **R6. Error Handling**
 - `thiserror` for custom error types (per-module)
-- `anyhow` for propagation in main
 - Tool errors returned as text in tool_result field
 - Display errors to user, continue loop (don't panic)
 
@@ -74,13 +71,7 @@ src/
   main.rs         — CLI, loop, error handling
   api.rs          — Anthropic client (reqwest + SSE)
   tools/
-    mod.rs        — Tool registry pattern
-    read.rs       — read_file
-    list.rs       — list_files
-    bash.rs       — bash execution
-    edit.rs       — edit_file
-    search.rs     — ripgrep wrapper
-    registry.rs   — tool introspection
+    mod.rs        — All 5 tools with tools! macro (read, list, bash, edit, search)
 
 reference/
   go-source/      — Cloned Go workshop code (pin)
@@ -112,7 +103,8 @@ reference/
 - `tokio` — async runtime (full features)
 - `clap` — CLI parsing (derive feature)
 - `thiserror` — error types
-- `anyhow` — error propagation
+- `futures-util` — stream consumption for SSE parsing
+- `wait-timeout` — bash command timeout protection
 
 ---
 

@@ -48,6 +48,13 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
 }
 
+// R8: Subagent coordination types (dispatch not yet implemented)
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SubagentContext {
+    pub subagent_id: Option<String>,
+}
+
 pub struct AnthropicClient {
     client: reqwest::Client,
     api_key: String,

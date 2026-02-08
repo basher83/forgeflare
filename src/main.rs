@@ -53,6 +53,7 @@ async fn main() {
             }],
         });
         // Inner loop: send message, dispatch tools, repeat until no tool_use
+        // R8: subagent dispatch integration point — tool results could route to child agents
         loop {
             if cli.verbose {
                 eprintln!(

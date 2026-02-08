@@ -531,9 +531,9 @@ mod tests {
     #[test]
     fn search_with_file_type() {
         let result = search_exec(
-            serde_json::json!({"pattern": "fn all_tools", "path": "src", "file_type": "rust"}),
+            serde_json::json!({"pattern": "fn all_tool_schemas", "path": "src", "file_type": "rust"}),
         );
         assert!(result.is_ok());
-        assert!(result.unwrap().contains("fn all_tools"));
+        assert!(result.unwrap().contains("fn all_tool_schemas"));
     }
 }
