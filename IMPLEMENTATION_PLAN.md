@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~698 production lines across 3 source files with 79 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~675 production lines across 3 source files with 79 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
 
 Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 79 unit tests.
 
 File structure:
-- src/main.rs (~228 production lines)
-- src/api.rs (~232 production lines)
-- src/tools/mod.rs (~238 production lines)
-- Total: ~698 production lines + ~924 test lines
+- src/main.rs (~232 production lines)
+- src/api.rs (~217 production lines)
+- src/tools/mod.rs (~226 production lines)
+- Total: ~675 production lines + ~924 test lines
 
 ## Architectural Decisions
 
@@ -24,7 +24,7 @@ Conversation context management uses a sliding window that trims at exchange bou
 
 SSE buffer uses `buf.drain(..nl + 1)` instead of `buf[nl + 1..].to_string()` to avoid O(N^2) allocation per line during streaming.
 
-Stdin pipe detection uses `std::io::IsTerminal`. When stdin is not a terminal (piped input), the interactive prompt and banner are suppressed (R5 compliance).
+Stdin pipe detection uses `std::io::IsTerminal`. When stdin is not a terminal (piped input), the interactive prompt and banner are suppressed (R5 compliance). Piped stdin is read entirely into a single string before entering the conversation loop, so multi-line prompts from `cat prompt.txt | agent` are sent as one coherent message instead of line-by-line.
 
 Hand-written JSON schemas via `serde_json::json!()` inline in the `tools!` macro. The Go reference uses `jsonschema.Reflector` which drops the `required` array (a bug). The Rust version uses explicit `json!()` literals with proper `required` arrays.
 
@@ -88,6 +88,10 @@ Generic `drain<R: Read>` helper eliminates bash stdout/stderr thread spawn dupli
 
 `match` expression for edit_file occurrence counting is more compact than sequential if-else. `match content.matches(old_str).count() { 0 => ..., 1 => {}, n => ... }` saves 2 lines over separate `if count == 0` / `if count > 1` checks while remaining equally readable.
 
+Piped stdin must be read as a single prompt, not line-by-line. The Go reference processes piped input line-by-line (each line becomes a separate API call), which silently produces wrong behavior when users pipe multi-line prompts (`cat prompt.txt | agent`, heredocs, `echo -e "line1\nline2" | agent`). The fix reads all of stdin into one string before entering the conversation loop. The loop runs once for the piped input, processes the full tool loop, then exits. This matches user expectations for Unix-style piped input.
+
+`Option::take()` with match arms eliminates boolean flags for one-shot patterns. The piped stdin path originally used a `piped_done` boolean to track whether the single piped input had been consumed. Using `piped_input.take()` with `None if !interactive => break` is cleaner — the Option itself tracks consumption state, and the match arm pattern naturally handles both piped (one-shot) and interactive (continuous) modes.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -104,13 +108,13 @@ The specification has been updated to reflect implementation decisions:
 
 - R3 updated: enum example replaced with tools! macro pattern that matches implementation.
 - R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false). bash_exec truncates output at 100KB. Directory filter works at any depth using file_name comparison.
-- R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode.
+- R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode. Piped stdin reads all input as a single prompt.
 - R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`. Partial tool_use blocks filtered on truncation.
 - SSE hardened: Unknown block types handled via placeholder blocks to maintain index sync. Mid-stream error events explicitly detected. Empty text blocks filtered before returning. Incomplete streams detected via missing stop_reason.
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target <700 maintained at ~698 despite SseParser extraction (+15 net lines) through comment compression, generic drain helper, and match expression compression.
+- Line target <700 maintained at ~675 with piped stdin support and Option::take() simplification.
 - SSE parser now has 13 unit tests covering the full event processing state machine.
 
 ## Verification Checklist
@@ -152,4 +156,5 @@ The specification has been updated to reflect implementation decisions:
 [x] SSE parser extracted into testable SseParser struct with 13 tests
 [x] list_files output sorted for deterministic results
 [x] Tool loop iteration limit (50) prevents runaway agent behavior
+[x] Piped stdin reads all input as single prompt (R5)
 [x] cargo test passes (79 unit tests)

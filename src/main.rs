@@ -110,31 +110,42 @@ async fn main() {
         println!("Chat with Claude (type 'exit' or Ctrl-D to quit)");
     }
     let mut conversation: Vec<Message> = Vec::new();
+    // Piped stdin: read all input as a single prompt (R5)
+    let mut piped_input = if !interactive {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).ok();
+        Some(buf.trim().to_string()).filter(|s| !s.is_empty())
+    } else {
+        None
+    };
     let stdin = std::io::stdin();
     loop {
-        if interactive {
-            print!("\x1b[94mYou\x1b[0m: ");
-            std::io::stdout().flush().ok();
-        }
-        let mut input = String::new();
-        if stdin.read_line(&mut input).map_or(true, |n| n == 0) {
-            break;
-        }
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input == "exit" {
-            break;
-        }
+        let input = match piped_input.take() {
+            Some(p) => p,
+            None if !interactive => break,
+            None => {
+                print!("\x1b[94mYou\x1b[0m: ");
+                std::io::stdout().flush().ok();
+                let mut line = String::new();
+                if stdin.read_line(&mut line).map_or(true, |n| n == 0) {
+                    break;
+                }
+                let t = line.trim().to_string();
+                if t.is_empty() {
+                    continue;
+                }
+                if t == "exit" {
+                    break;
+                }
+                t
+            }
+        };
         if cli.verbose {
             eprintln!("[verbose] User: {input}");
         }
         conversation.push(Message {
             role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: input.to_string(),
-            }],
+            content: vec![ContentBlock::Text { text: input }],
         });
         // Inner loop: send → dispatch tools → repeat (R8: subagent dispatch integration point)
         let mut tool_iterations = 0usize;
