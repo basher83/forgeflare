@@ -2,6 +2,15 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Write;
+use std::sync::LazyLock;
+
+/// Respects the NO_COLOR convention (https://no-color.org/).
+/// When NO_COLOR is set (any value), all ANSI color output is suppressed.
+static USE_COLOR: LazyLock<bool> = LazyLock::new(|| std::env::var_os("NO_COLOR").is_none());
+
+pub fn color(code: &str) -> &str {
+    if *USE_COLOR { code } else { "" }
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum AgentError {
@@ -108,7 +117,8 @@ impl SseParser {
                 match delta["type"].as_str() {
                     Some("text_delta") => {
                         let t = delta["text"].as_str().unwrap_or_default();
-                        print!("\x1b[93m{t}\x1b[0m");
+                        let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
+                        print!("{c}{t}{r}");
                         std::io::stdout().flush().ok();
                         if let Some(ContentBlock::Text { text }) = self.blocks.get_mut(idx) {
                             text.push_str(t);
@@ -130,9 +140,8 @@ impl SseParser {
                     && let Some(f) = self.fragments.get(idx).filter(|f| !f.is_empty())
                 {
                     *input = serde_json::from_str(f).unwrap_or_else(|e| {
-                        eprintln!(
-                            "\x1b[91m[warning]\x1b[0m Corrupt tool input (JSON parse failed: {e})"
-                        );
+                        let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
+                        eprintln!("{c}[warning]{r} Corrupt tool input (JSON parse failed: {e})");
                         Value::Null
                     });
                 }

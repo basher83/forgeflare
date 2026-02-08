@@ -1,7 +1,7 @@
 mod api;
 mod tools;
 
-use api::{AnthropicClient, ContentBlock, Message, Role, StopReason};
+use api::{AnthropicClient, ContentBlock, Message, Role, StopReason, color};
 use clap::Parser;
 use std::io::{IsTerminal, Write};
 use tools::{all_tool_schemas, dispatch_tool};
@@ -48,15 +48,17 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
     for &cut in &boundaries[1..=keep_last] {
         let prefix: usize = sizes[..cut].iter().sum();
         if total - prefix <= max_bytes {
+            let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
             eprintln!(
-                "\x1b[93m[context]\x1b[0m Trimmed {cut} messages ({prefix} bytes) to fit context window"
+                "{c}[context]{r} Trimmed {cut} messages ({prefix} bytes) to fit context window"
             );
             conversation.drain(..cut);
             return;
         }
     }
     let dropped = boundaries[keep_last];
-    eprintln!("\x1b[93m[context]\x1b[0m Trimmed to last exchange ({dropped} messages dropped)");
+    let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
+    eprintln!("{c}[context]{r} Trimmed to last exchange ({dropped} messages dropped)");
     conversation.drain(..dropped);
     truncate_oversized_blocks(conversation, max_bytes);
 }
@@ -132,7 +134,8 @@ async fn main() {
             Some(p) => p,
             None if !interactive => break,
             None => {
-                print!("\x1b[94mYou\x1b[0m: ");
+                let (c, r) = (color("\x1b[94m"), color("\x1b[0m"));
+                print!("{c}You{r}: ");
                 std::io::stdout().flush().ok();
                 let mut line = String::new();
                 if stdin.read_line(&mut line).map_or(true, |n| n == 0) {
@@ -159,8 +162,9 @@ async fn main() {
         let mut tool_iterations = 0usize;
         loop {
             if tool_iterations >= MAX_TOOL_ITERATIONS {
+                let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
                 eprintln!(
-                    "\x1b[93m[warning]\x1b[0m Tool loop hit {MAX_TOOL_ITERATIONS} iterations, breaking to prevent runaway"
+                    "{c}[warning]{r} Tool loop hit {MAX_TOOL_ITERATIONS} iterations, breaking to prevent runaway"
                 );
                 break;
             }
@@ -175,7 +179,8 @@ async fn main() {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("\x1b[91mError\x1b[0m: {e}");
+                    let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
+                    eprintln!("{c}Error{r}: {e}");
                     recover_conversation(&mut conversation);
                     break;
                 }
@@ -190,7 +195,8 @@ async fn main() {
             });
             if stop_reason != StopReason::ToolUse {
                 if stop_reason == StopReason::MaxTokens {
-                    eprintln!("\x1b[93m[warning]\x1b[0m Response truncated (max_tokens reached)");
+                    let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
+                    eprintln!("{c}[warning]{r} Response truncated (max_tokens reached)");
                     if let Some(msg) = conversation.last_mut() {
                         msg.content.retain(|b| {
                             !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null())
@@ -202,17 +208,19 @@ async fn main() {
             let mut tool_results: Vec<ContentBlock> = Vec::new();
             for block in &response {
                 if let ContentBlock::ToolUse { id, name, input } = block {
+                    let (c, r) = (color("\x1b[96m"), color("\x1b[0m"));
                     if cli.verbose {
-                        eprintln!("\x1b[96mtool\x1b[0m: {name}({input})");
+                        eprintln!("{c}tool{r}: {name}({input})");
                     } else {
-                        eprintln!("\x1b[96mtool\x1b[0m: {name}");
+                        eprintln!("{c}tool{r}: {name}");
                     }
                     let result = dispatch_tool(name, input.clone(), id);
                     if cli.verbose
                         && let ContentBlock::ToolResult { ref content, .. } = result
                     {
+                        let (c, r) = (color("\x1b[92m"), color("\x1b[0m"));
                         let t: String = content.chars().take(200).collect();
-                        eprintln!("\x1b[92mresult\x1b[0m: {t}");
+                        eprintln!("{c}result{r}: {t}");
                     }
                     tool_results.push(result);
                 }

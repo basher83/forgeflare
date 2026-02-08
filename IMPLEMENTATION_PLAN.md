@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~697 production lines across 3 source files with 81 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~627 production lines across 3 source files with 81 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/).
 
 Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 81 unit tests.
 
 File structure:
-- src/main.rs (~235 production lines)
-- src/api.rs (~234 production lines)
-- src/tools/mod.rs (~228 production lines)
-- Total: ~697 production lines
+- src/main.rs (~211 production lines)
+- src/api.rs (~217 production lines)
+- src/tools/mod.rs (~199 production lines)
+- Total: ~627 production lines
 
 ## Architectural Decisions
 
@@ -100,6 +100,8 @@ API error mid-tool-loop leaves orphaned tool_use. When `send_message` fails afte
 
 Inline format args compress multi-line eprintln to single-line. rustfmt expands `eprintln!("... {}", expr)` to multiple lines when the format string + arg exceed the line width. Binding the expression to `let n = expr` first allows `eprintln!("... {n}")` which fits on one line. This pattern saved ~6 production lines across main.rs.
 
+`LazyLock` provides zero-cost NO_COLOR support. A `static USE_COLOR: LazyLock<bool>` initialized from `std::env::var_os("NO_COLOR").is_none()` is checked once on first access and cached forever. A `pub fn color(code: &str) -> &str` returns the ANSI escape code or empty string. This adds 4 production lines to api.rs and avoids any per-print overhead. The function is imported into main.rs to share the logic across modules.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -122,7 +124,7 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target <700 maintained at ~697 after bug fixes (SSE trailing buffer, orphaned tool_use recovery).
+- Line target <700 maintained at ~627 after NO_COLOR support and prior bug fixes.
 - SSE parser now has 14 unit tests covering the full event processing state machine.
 
 ## Verification Checklist
@@ -166,4 +168,5 @@ The specification has been updated to reflect implementation decisions:
 [x] list_files output sorted for deterministic results
 [x] Tool loop iteration limit (50) prevents runaway agent behavior
 [x] Piped stdin reads all input as single prompt (R5)
+[x] NO_COLOR convention respected: all ANSI output suppressed when NO_COLOR env var is set
 [x] cargo test passes (81 unit tests)
