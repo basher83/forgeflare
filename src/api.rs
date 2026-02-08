@@ -113,7 +113,7 @@ impl AnthropicClient {
             buf.push_str(&String::from_utf8_lossy(&chunk?));
             while let Some(nl) = buf.find('\n') {
                 let line = buf[..nl].trim_end().to_string();
-                buf = buf[nl + 1..].to_string();
+                buf.drain(..nl + 1);
                 if line.is_empty() {
                     continue;
                 }

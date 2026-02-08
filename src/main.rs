@@ -6,6 +6,53 @@ use clap::Parser;
 use std::io::{IsTerminal, Write};
 use tools::{all_tool_schemas, dispatch_tool};
 
+const MAX_CONVERSATION_BYTES: usize = 720_000; // ~180K tokens at ~4 chars/token
+
+/// Trim conversation to stay within token budget. Removes oldest exchanges first,
+/// preserving tool_use/tool_result pairing by only cutting at user-text boundaries.
+fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
+    let sizes: Vec<usize> = conversation
+        .iter()
+        .map(|m| serde_json::to_string(m).map_or(0, |s| s.len()))
+        .collect();
+    let total: usize = sizes.iter().sum();
+    if total <= max_bytes {
+        return;
+    }
+    // Exchange boundaries: user messages starting with Text (not ToolResult)
+    let boundaries: Vec<usize> = conversation
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            matches!(m.role, Role::User)
+                && m.content
+                    .first()
+                    .is_some_and(|b| matches!(b, ContentBlock::Text { .. }))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let keep_last = boundaries.len().saturating_sub(1);
+    if keep_last == 0 {
+        return;
+    }
+    for &cut in &boundaries[1..=keep_last] {
+        let prefix: usize = sizes[..cut].iter().sum();
+        if total - prefix <= max_bytes {
+            eprintln!(
+                "\x1b[93m[context]\x1b[0m Trimmed {cut} messages ({prefix} bytes) to fit context window"
+            );
+            conversation.drain(..cut);
+            return;
+        }
+    }
+    // Last exchange still over budget — trim to it anyway to avoid unbounded growth
+    eprintln!(
+        "\x1b[93m[context]\x1b[0m Trimmed to last exchange ({} messages dropped)",
+        boundaries[keep_last]
+    );
+    conversation.drain(..boundaries[keep_last]);
+}
+
 #[derive(Parser)]
 #[command(name = "agent", about = "Rust coding agent")]
 struct Cli {
@@ -65,6 +112,7 @@ async fn main() {
                     conversation.len()
                 );
             }
+            trim_conversation(&mut conversation, MAX_CONVERSATION_BYTES);
             let (response, stop_reason) = match client
                 .send_message(&conversation, &schemas, &cli.model)
                 .await
@@ -127,5 +175,184 @@ async fn main() {
     }
     if cli.verbose {
         eprintln!("[verbose] Chat session ended");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_text(s: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: s.to_string(),
+            }],
+        }
+    }
+
+    fn assistant_text(s: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: s.to_string(),
+            }],
+        }
+    }
+
+    fn assistant_tool_use() -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        }
+    }
+
+    fn user_tool_result(content: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: content.to_string(),
+                is_error: None,
+            }],
+        }
+    }
+
+    fn conversation_bytes(msgs: &[Message]) -> usize {
+        msgs.iter()
+            .map(|m| serde_json::to_string(m).unwrap().len())
+            .sum()
+    }
+
+    #[test]
+    fn trim_no_op_when_under_budget() {
+        let mut conv = vec![user_text("hello"), assistant_text("hi")];
+        let original_len = conv.len();
+        trim_conversation(&mut conv, 100_000);
+        assert_eq!(conv.len(), original_len);
+    }
+
+    #[test]
+    fn trim_removes_oldest_exchange() {
+        let mut conv = vec![
+            user_text("first question"),
+            assistant_text("first answer"),
+            user_text("second question"),
+            assistant_text("second answer"),
+            user_text("third question"),
+            assistant_text("third answer"),
+        ];
+        // Set budget to fit 2 exchanges but not 3
+        let two_exchange_size = conversation_bytes(&conv[2..]);
+        trim_conversation(&mut conv, two_exchange_size);
+        assert_eq!(conv.len(), 4); // exchanges 2 and 3 remain
+        assert!(
+            matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "second question")
+        );
+    }
+
+    #[test]
+    fn trim_preserves_tool_use_pairing() {
+        // Exchange 1: user text -> assistant tool_use -> user tool_result -> assistant text
+        // Exchange 2: user text -> assistant text
+        let mut conv = vec![
+            user_text("read the file"),
+            assistant_tool_use(),
+            user_tool_result("file contents here"),
+            assistant_text("I see the file"),
+            user_text("thanks"),
+            assistant_text("you're welcome"),
+        ];
+        // Budget fits only exchange 2
+        let last_exchange_size = conversation_bytes(&conv[4..]);
+        trim_conversation(&mut conv, last_exchange_size);
+        assert_eq!(conv.len(), 2);
+        assert!(matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "thanks"));
+    }
+
+    #[test]
+    fn trim_never_splits_tool_exchange() {
+        // Ensure tool_use and tool_result stay together
+        let mut conv = vec![
+            user_text("q1"),
+            assistant_tool_use(),
+            user_tool_result("result1"),
+            assistant_text("a1"),
+            user_text("q2"),
+            assistant_tool_use(),
+            user_tool_result("result2"),
+            assistant_text("a2"),
+        ];
+        // Budget fits exchange 2 but not both
+        let exchange2_size = conversation_bytes(&conv[4..]);
+        trim_conversation(&mut conv, exchange2_size);
+        // Should cut at index 4 (user text "q2"), keeping tool pair intact
+        assert_eq!(conv.len(), 4);
+        assert!(matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "q2"));
+        assert!(matches!(&conv[1].content[0], ContentBlock::ToolUse { .. }));
+        assert!(matches!(
+            &conv[2].content[0],
+            ContentBlock::ToolResult { .. }
+        ));
+    }
+
+    #[test]
+    fn trim_single_exchange_untouched() {
+        let mut conv = vec![
+            user_text(&"x".repeat(10_000)),
+            assistant_text(&"y".repeat(10_000)),
+        ];
+        // Budget smaller than the single exchange — can't trim further
+        trim_conversation(&mut conv, 100);
+        assert_eq!(conv.len(), 2); // preserved, nothing to cut
+    }
+
+    #[test]
+    fn trim_large_tool_result_triggers_trim() {
+        let big_result = "x".repeat(500_000);
+        let mut conv = vec![
+            user_text("old question"),
+            assistant_text("old answer"),
+            user_text("read big file"),
+            assistant_tool_use(),
+            user_tool_result(&big_result),
+            assistant_text("that's a big file"),
+            user_text("now what"),
+            assistant_text("let me help"),
+        ];
+        // Budget that can't hold everything but can hold last 2 exchanges
+        let last_two_size = conversation_bytes(&conv[2..]);
+        let budget = last_two_size; // fits exchanges 2+3 but not 1+2+3
+        trim_conversation(&mut conv, budget);
+        assert!(conv.len() < 8); // something was trimmed
+        // First remaining message should be a user text (exchange boundary)
+        assert!(matches!(&conv[0].content[0], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn trim_fallback_when_everything_huge() {
+        let huge = "x".repeat(400_000);
+        let mut conv = vec![
+            user_text(&huge),
+            assistant_text(&huge),
+            user_text("small"),
+            assistant_text("small"),
+        ];
+        // Budget too small for even the last exchange of the big ones
+        trim_conversation(&mut conv, 1000);
+        // Should trim to last exchange
+        assert_eq!(conv.len(), 2);
+        assert!(matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "small"));
+    }
+
+    #[test]
+    fn trim_empty_conversation() {
+        let mut conv: Vec<Message> = Vec::new();
+        trim_conversation(&mut conv, 100); // should not panic
+        assert!(conv.is_empty());
     }
 }
