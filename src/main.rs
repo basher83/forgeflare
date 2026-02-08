@@ -88,6 +88,10 @@ async fn main() {
             if stop_reason == StopReason::EndTurn {
                 break;
             }
+            if stop_reason == StopReason::MaxTokens {
+                eprintln!("\x1b[93m[warning]\x1b[0m Response truncated (max_tokens reached)");
+                break;
+            }
             let mut tool_results: Vec<ContentBlock> = Vec::new();
             for block in &response {
                 if let ContentBlock::ToolUse { id, name, input } = block {

@@ -19,6 +19,7 @@ pub enum AgentError {
 pub enum StopReason {
     EndTurn,
     ToolUse,
+    MaxTokens,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,11 +171,11 @@ impl AnthropicClient {
                             println!();
                         }
                     }
-                    "message_delta" => {
-                        if p["delta"]["stop_reason"].as_str() == Some("tool_use") {
-                            stop_reason = StopReason::ToolUse;
-                        }
-                    }
+                    "message_delta" => match p["delta"]["stop_reason"].as_str() {
+                        Some("tool_use") => stop_reason = StopReason::ToolUse,
+                        Some("max_tokens") => stop_reason = StopReason::MaxTokens,
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -308,12 +309,16 @@ mod tests {
     fn stop_reason_equality() {
         assert_eq!(StopReason::EndTurn, StopReason::EndTurn);
         assert_eq!(StopReason::ToolUse, StopReason::ToolUse);
+        assert_eq!(StopReason::MaxTokens, StopReason::MaxTokens);
         assert_ne!(StopReason::EndTurn, StopReason::ToolUse);
+        assert_ne!(StopReason::EndTurn, StopReason::MaxTokens);
+        assert_ne!(StopReason::ToolUse, StopReason::MaxTokens);
     }
 
     #[test]
     fn stop_reason_debug_format() {
         assert_eq!(format!("{:?}", StopReason::EndTurn), "EndTurn");
         assert_eq!(format!("{:?}", StopReason::ToolUse), "ToolUse");
+        assert_eq!(format!("{:?}", StopReason::MaxTokens), "MaxTokens");
     }
 }
