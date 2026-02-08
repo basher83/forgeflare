@@ -107,10 +107,8 @@ async fn main() {
                     if cli.verbose
                         && let ContentBlock::ToolResult { ref content, .. } = result
                     {
-                        eprintln!(
-                            "\x1b[92mresult\x1b[0m: {}",
-                            &content[..content.len().min(200)]
-                        );
+                        let truncated: String = content.chars().take(200).collect();
+                        eprintln!("\x1b[92mresult\x1b[0m: {truncated}");
                     }
                     tool_results.push(result);
                 }

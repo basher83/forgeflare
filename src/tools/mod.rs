@@ -8,6 +8,8 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const BASH_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_READ_SIZE: u64 = 1024 * 1024; // 1MB
+const MAX_BASH_OUTPUT: usize = 100 * 1024; // 100KB
 
 macro_rules! tools {
     ($($name:expr, $desc:expr, $schema:expr, $func:expr);+ $(;)?) => {
@@ -28,14 +30,14 @@ tools! {
     "read_file", "Read a file's contents with line numbers",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Relative file path"}}, "required": ["path"]}),
     read_exec;
-    "list_files", "List files and directories. Defaults to current directory.",
-    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}}, "required": []}),
+    "list_files", "List files and directories. Defaults to current directory, non-recursive.",
+    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []}),
     list_exec;
     "bash", "Execute a bash command and return its output (120s timeout)",
     serde_json::json!({"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "cwd": {"type": "string", "description": "Optional working directory"}}, "required": ["command"]}),
     bash_exec;
-    "edit_file", "Replace old_str with new_str in a file. Creates file if missing.",
-    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for - must match exactly once"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}}, "required": ["path", "old_str", "new_str"]}),
+    "edit_file", "Replace old_str with new_str in a file. Empty old_str creates file if missing, or appends if it exists.",
+    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for (must match exactly once). Empty string = create/append mode"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}}, "required": ["path", "old_str", "new_str"]}),
     edit_exec;
     "code_search", "Search for code patterns using ripgrep (rg)",
     serde_json::json!({"type": "object", "properties": {"pattern": {"type": "string", "description": "The search pattern or regex"}, "path": {"type": "string", "description": "Optional path to search in"}, "file_type": {"type": "string", "description": "File extension filter (e.g. 'go', 'js')"}, "case_sensitive": {"type": "boolean", "description": "Case sensitive (default: false)"}}, "required": ["pattern"]}),
@@ -44,7 +46,21 @@ tools! {
 
 fn read_exec(input: Value) -> Result<String, String> {
     let path = input["path"].as_str().ok_or("path is required")?;
-    let content = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let meta = fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    if meta.len() > MAX_READ_SIZE {
+        return Err(format!(
+            "{path}: file is {}KB, exceeds {}KB limit",
+            meta.len() / 1024,
+            MAX_READ_SIZE / 1024
+        ));
+    }
+    // Binary detection: check first 8KB for null bytes
+    let raw = fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let check_len = raw.len().min(8192);
+    if raw[..check_len].contains(&0) {
+        return Err(format!("{path}: binary file, cannot display contents"));
+    }
+    let content = String::from_utf8(raw).map_err(|_| format!("{path}: not valid UTF-8"))?;
     Ok(content
         .lines()
         .enumerate()
@@ -55,26 +71,43 @@ fn read_exec(input: Value) -> Result<String, String> {
 
 fn list_exec(input: Value) -> Result<String, String> {
     let dir = input["path"].as_str().unwrap_or(".");
+    let recursive = input["recursive"].as_bool().unwrap_or(false);
     let mut files = Vec::new();
-    walk(Path::new(dir), Path::new(dir), &mut files).map_err(|e| e.to_string())?;
+    walk(Path::new(dir), Path::new(dir), &mut files, recursive).map_err(|e| e.to_string())?;
     serde_json::to_string(&files).map_err(|e| e.to_string())
 }
 
-fn walk(base: &Path, dir: &Path, files: &mut Vec<String>) -> std::io::Result<()> {
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".devenv",
+    "node_modules",
+    "target",
+    ".venv",
+    "vendor",
+];
+
+fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let rel = path
             .strip_prefix(base)
             .unwrap_or(&path)
             .to_string_lossy()
             .to_string();
         if entry.file_type()?.is_dir() {
-            if rel == ".git" || rel == ".devenv" {
+            if SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
             files.push(format!("{rel}/"));
-            walk(base, &path, files)?;
+            if recursive {
+                walk(base, &path, files, recursive)?;
+            }
         } else {
             files.push(rel);
         }
@@ -94,6 +127,24 @@ fn bash_exec(input: Value) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("exec failed: {e}"))?;
+    // Drain stdout/stderr in threads to prevent pipe buffer deadlock.
+    // If we wait() before reading, commands producing >64KB block on the full pipe.
+    let stdout_handle = child.stdout.take().map(|out| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let mut reader = out;
+            reader.read_to_string(&mut buf).ok();
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|err| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let mut reader = err;
+            reader.read_to_string(&mut buf).ok();
+            buf
+        })
+    });
     let status = match child
         .wait_timeout(BASH_TIMEOUT)
         .map_err(|e| format!("wait: {e}"))?
@@ -105,24 +156,27 @@ fn bash_exec(input: Value) -> Result<String, String> {
             return Err("Command timed out after 120s and was killed".into());
         }
     };
-    let (mut stdout, mut stderr) = (String::new(), String::new());
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .ok();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .ok();
-    if !status.success() {
-        Ok(format!("Command failed ({status}): {stdout}{stderr}"))
+    let stdout = stdout_handle
+        .and_then(|h| h.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_handle
+        .and_then(|h| h.join().ok())
+        .unwrap_or_default();
+    let mut output = if !status.success() {
+        format!("Command failed ({status}): {stdout}{stderr}")
     } else {
-        Ok(format!("{stdout}{stderr}").trim().to_string())
+        format!("{stdout}{stderr}").trim().to_string()
+    };
+    if output.len() > MAX_BASH_OUTPUT {
+        // Find nearest char boundary at or before MAX_BASH_OUTPUT
+        let mut end = MAX_BASH_OUTPUT;
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        output.truncate(end);
+        output.push_str("\n... (output truncated at 100KB)");
     }
+    Ok(output)
 }
 
 fn edit_exec(input: Value) -> Result<String, String> {
@@ -301,6 +355,27 @@ mod tests {
         assert_eq!(result.unwrap(), "");
     }
 
+    #[test]
+    fn read_file_binary_detected() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, b"\x00\x01\x02binary").unwrap();
+        let result = read_exec(serde_json::json!({"path": f.path().to_str().unwrap()}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("binary file"));
+    }
+
+    #[test]
+    fn read_file_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        // Write 2MB file (exceeds 1MB limit)
+        let data = "x".repeat(2 * 1024 * 1024);
+        fs::write(&path, &data).unwrap();
+        let result = read_exec(serde_json::json!({"path": path.to_str().unwrap()}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds"));
+    }
+
     // --- list_files tests ---
 
     #[test]
@@ -312,7 +387,21 @@ mod tests {
     }
 
     #[test]
-    fn list_specific_dir() {
+    fn list_specific_dir_recursive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/b.txt"), "").unwrap();
+        let result =
+            list_exec(serde_json::json!({"path": dir.path().to_str().unwrap(), "recursive": true}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(files.contains(&"a.txt".to_string()));
+        assert!(files.contains(&"sub/".to_string()));
+        assert!(files.contains(&"sub/b.txt".to_string()));
+    }
+
+    #[test]
+    fn list_shallow_by_default() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "").unwrap();
         fs::create_dir(dir.path().join("sub")).unwrap();
@@ -321,7 +410,7 @@ mod tests {
         let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(files.contains(&"a.txt".to_string()));
         assert!(files.contains(&"sub/".to_string()));
-        assert!(files.contains(&"sub/b.txt".to_string()));
+        assert!(!files.contains(&"sub/b.txt".to_string()));
     }
 
     #[test]
@@ -334,6 +423,31 @@ mod tests {
         let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(!files.iter().any(|f| f.contains(".git")));
         assert!(files.contains(&"real.txt".to_string()));
+    }
+
+    #[test]
+    fn list_excludes_nested_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("sub/.git")).unwrap();
+        fs::write(dir.path().join("sub/.git/config"), "").unwrap();
+        fs::write(dir.path().join("sub/real.txt"), "").unwrap();
+        let result =
+            list_exec(serde_json::json!({"path": dir.path().to_str().unwrap(), "recursive": true}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(!files.iter().any(|f| f.contains(".git")));
+        assert!(files.contains(&"sub/real.txt".to_string()));
+    }
+
+    #[test]
+    fn list_excludes_skip_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        for skip in &["node_modules", "target", ".venv", "vendor"] {
+            fs::create_dir(dir.path().join(skip)).unwrap();
+        }
+        fs::write(dir.path().join("keep.txt"), "").unwrap();
+        let result = list_exec(serde_json::json!({"path": dir.path().to_str().unwrap()}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(files, vec!["keep.txt"]);
     }
 
     #[test]
@@ -376,6 +490,17 @@ mod tests {
         let result = bash_exec(serde_json::json!({"command": "echo err >&2"}));
         let output = result.unwrap();
         assert!(output.contains("err"));
+    }
+
+    #[test]
+    fn bash_output_truncated() {
+        // Generate output larger than MAX_BASH_OUTPUT (100KB) using printf
+        let result = bash_exec(
+            serde_json::json!({"command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"}),
+        );
+        let output = result.unwrap();
+        assert!(output.contains("truncated at 100KB"));
+        assert!(output.len() <= 110 * 1024); // 100KB + truncation message
     }
 
     // --- edit_file tests ---

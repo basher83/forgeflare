@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented. The codebase has ~520 production lines across 3 source files with 45 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5.
+All requirements (R1-R8) are fully implemented with hardened tool safety. The codebase has ~572 production lines across 3 source files with 51 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 45 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 51 unit tests.
 
 File structure:
-- src/main.rs (133 lines, all production)
-- src/api.rs (321 lines, 186 production + 135 test)
-- src/tools/mod.rs (558 lines, 201 production + 357 test)
-- Total: 1012 lines (~520 production + ~492 test)
+- src/main.rs (131 lines, all production)
+- src/api.rs (324 lines, 186 production + 138 test)
+- src/tools/mod.rs (685 lines, 255 production + 430 test)
+- Total: 1140 lines (~572 production + ~568 test)
 
 ## Architectural Decisions
 
@@ -44,6 +44,12 @@ Bash timeout vs command failure distinction: a command that exits non-zero ran t
 
 The Anthropic API documents three stop reasons: `end_turn`, `max_tokens`, `tool_use`. The Go reference only checks for tool_use presence implicitly. The Rust version explicitly parses all three from the `message_delta` SSE event, which is more correct and enables user-facing warnings on truncation.
 
+Pipe buffer deadlock in bash_exec: the original implementation called `wait_timeout()` before reading stdout/stderr. When a command produces >64KB of output, the pipe buffer fills, blocking the child process, while `wait_timeout` blocks waiting for the child to exit. Fixed by draining stdout/stderr in separate threads before waiting. This pattern is essential for any synchronous process I/O where the output size is unbounded.
+
+String::truncate panics on non-char-boundary positions. Both verbose output truncation (`main.rs`) and bash output truncation (`tools/mod.rs`) must find the nearest char boundary when truncating. Use `is_char_boundary()` for byte-level truncation, or `chars().take(n).collect()` for char-level truncation.
+
+list_files directory filter must compare directory names, not relative paths. Using `path.file_name()` catches `.git` at any depth; comparing `rel == ".git"` only catches it at the top level.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -54,14 +60,21 @@ Performance profiling. No benchmarking done. Areas: SSE parsing overhead, ripgre
 
 Error recovery. No retry logic for transient API failures.
 
+Conversation context management. The conversation vector grows without bound across the session. When conversation size approaches the model's context window (~200K tokens), the API will error. Consider implementing conversation truncation or a sliding window to drop oldest messages while preserving the system prompt and recent context.
+
+SSE buffer performance. The SSE parser creates a new String allocation with `buf[nl + 1..].to_string()` per line, resulting in O(N^2) work per chunk. For typical responses this is fine but could be optimized with `buf.drain(..nl + 1)` for large streaming responses.
+
+Line count management. Production lines grew from ~520 to ~572 due to R4 compliance (binary detection, size limits, recursive parameter, threaded I/O, output truncation, expanded skip dirs list). The spec target of <550 may need updating to accommodate full R4 safety features.
+
 ## Spec Alignment
 
 The specification has been updated to reflect implementation decisions:
 
 - R3 updated: enum example replaced with tools! macro pattern that matches implementation.
+- R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false). bash_exec truncates output at 100KB. Directory filter works at any depth using file_name comparison.
 - R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode.
 - R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`.
-- Line target updated from <500 to <550 to accommodate full R5/R7 compliance (~520 actual).
+- Line target updated from <500 to <550 to accommodate full R5/R7 compliance (~572 actual with R4 safety).
 
 ## Verification Checklist
 
@@ -71,13 +84,19 @@ The specification has been updated to reflect implementation decisions:
 [x] Event loop follows Go reference structure with explicit stop_reason check
 [x] Tool dispatch with is_error propagation
 [x] Bash timeout protection (120s, returns is_error: true on timeout)
+[x] Bash pipe deadlock prevention (threaded stdout/stderr draining)
+[x] Bash output truncation (100KB limit)
 [x] System prompt configured, max_tokens set to 8192
-[x] Production code under 550 lines (~520 lines)
 [x] StopReason enum: EndTurn, ToolUse, MaxTokens — parsed from message_delta SSE event
 [x] MaxTokens truncation warning displayed to user
 [x] Non-interactive mode: suppresses prompts when stdin is piped
 [x] R8 subagent types defined (SubagentContext, StopReason in api.rs)
+[x] read_file: 1MB size limit, binary detection via null byte check (R4)
+[x] list_files: recursive parameter (default: false), SKIP_DIRS filter at any depth (R4)
+[x] edit_file: schema documents create/append mode for empty old_str
+[x] Verbose output truncation is UTF-8 safe (chars().take() instead of byte slice)
+[x] No unwrap() panics in tool implementations
 [x] cargo fmt --check passes
 [x] cargo clippy -- -D warnings passes
 [x] cargo build --release passes
-[x] cargo test passes (45 unit tests)
+[x] cargo test passes (51 unit tests)

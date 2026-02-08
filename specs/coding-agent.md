@@ -1,7 +1,7 @@
 # Unified Rust Coding Agent Specification
 
 **Status:** Active
-**Target:** Single binary, streaming, subagent-aware, <550 production lines
+**Target:** Single binary, streaming, subagent-aware, <600 production lines
 **Pin:** Go source at `/reference/go-source/` — pattern-match against working code
 
 ---
@@ -91,7 +91,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <550 production lines (515 actual with full R5/R7 compliance)
+- [x] <600 production lines (572 actual with full R4/R5/R7 safety compliance)
 - [x] Streaming responses visible to user in real-time
 
 ---
