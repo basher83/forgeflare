@@ -147,7 +147,10 @@ impl AnthropicClient {
                         fragments.push(String::new());
                     }
                     "content_block_delta" => {
-                        let (idx, delta) = (p["index"].as_u64().unwrap_or(0) as usize, &p["delta"]);
+                        let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
+                            continue;
+                        };
+                        let delta = &p["delta"];
                         match delta["type"].as_str() {
                             Some("text_delta") => {
                                 let t = delta["text"].as_str().unwrap_or_default();
@@ -166,11 +169,21 @@ impl AnthropicClient {
                         }
                     }
                     "content_block_stop" => {
-                        let idx = p["index"].as_u64().unwrap_or(0) as usize;
+                        let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
+                            continue;
+                        };
                         if let Some(ContentBlock::ToolUse { input, .. }) = blocks.get_mut(idx)
                             && let Some(f) = fragments.get(idx).filter(|f| !f.is_empty())
                         {
-                            *input = serde_json::from_str(f).unwrap_or(Value::Null);
+                            match serde_json::from_str(f) {
+                                Ok(v) => *input = v,
+                                Err(e) => {
+                                    eprintln!(
+                                        "\x1b[91m[warning]\x1b[0m Corrupt tool input (JSON parse failed: {e})"
+                                    );
+                                    *input = Value::Null;
+                                }
+                            }
                         }
                         if let Some(ContentBlock::Text { text }) = blocks.get(idx)
                             && !text.is_empty()

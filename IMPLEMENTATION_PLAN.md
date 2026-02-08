@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~642 production lines across 3 source files with 61 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management prevents unbounded growth.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~668 production lines across 3 source files with 63 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management with truncation safety valve prevents unbounded growth.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 61 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 63 unit tests.
 
 File structure:
-- src/main.rs (~187 production lines)
-- src/api.rs (~200 production lines)
+- src/main.rs (~206 production lines)
+- src/api.rs (~209 production lines)
 - src/tools/mod.rs (~255 production lines)
-- Total: ~642 production lines + ~801 test lines
+- Total: ~668 production lines + ~801 test lines
 
 ## Architectural Decisions
 
@@ -66,6 +66,14 @@ On max_tokens truncation, tool_use blocks may be incomplete with null input beca
 
 SSE stream completeness must be verified. The `stop_reason` was previously defaulted to `EndTurn`, meaning a dropped connection would silently be treated as a successful response. Fixed by using `Option<StopReason>` and tracking `message_stop` events. If the stream ends without a `stop_reason` from `message_delta`, the connection was dropped and an error is returned. The `message_stop` event serves as a secondary signal that the message completed normally, used as a defensive fallback if `message_delta` somehow delivers no `stop_reason`.
 
+SSE event index fields should be validated, not defaulted. Using `unwrap_or(0)` for missing SSE index fields silently corrupts block 0 when events have malformed/missing indices. Skip events with missing index instead of defaulting.
+
+Malformed JSON fragments in tool_use inputs should be detected at parse time. Using `unwrap_or(Value::Null)` on parse failure produces misleading "parameter is required" errors from tool dispatch. Logging the actual parse error makes debugging stream corruption much easier.
+
+Conversation trimming must handle single-exchange overflow. When a single exchange contains a large tool result (e.g. near-1MB read_file), the conversation budget (720KB) can be exceeded even after trimming to one exchange. A last-resort truncation of oversized content blocks (>10KB) prevents API "request too large" errors.
+
+Range::find is cleaner than while loops for char boundary scanning. `(keep..text.len()).find(|&i| text.is_char_boundary(i))` replaces the manual `while !is_char_boundary { end += 1 }` loop.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -88,7 +96,7 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target updated from <500 to <650 to accommodate full R4/R5/R7 compliance and context management (~642 actual).
+- Line target updated from <650 to <700 to accommodate conversation truncation safety valve (~668 actual).
 
 ## Verification Checklist
 
@@ -96,6 +104,8 @@ The specification has been updated to reflect implementation decisions:
 [x] SSE streaming with real-time output and stop_reason parsing (R7)
 [x] SSE unknown block type handling: placeholder blocks maintain index sync
 [x] SSE mid-stream error events explicitly matched and returned as errors
+[x] SSE index validation: skip events with missing index instead of defaulting to 0
+[x] Malformed JSON fragment detection: log parse errors for tool_use inputs
 [x] Partial tool_use blocks with null input filtered on MaxTokens truncation
 [x] CLI: --verbose, --model flags, stdin pipe detection (R5)
 [x] Event loop follows Go reference structure with explicit stop_reason check
@@ -117,9 +127,10 @@ The specification has been updated to reflect implementation decisions:
 [x] Verbose output truncation is UTF-8 safe (chars().take() instead of byte slice)
 [x] No unwrap() panics in tool implementations
 [x] Conversation context management: trim at exchange boundaries, 720KB budget
+[x] Conversation truncation safety valve: oversized single exchanges truncated to fit budget
 [x] SSE incomplete stream detection: error on missing stop_reason/message_stop
 [x] SSE buffer: O(1) line extraction via buf.drain() instead of O(N^2) to_string()
 [x] cargo fmt --check passes
 [x] cargo clippy -- -D warnings passes
 [x] cargo build --release passes
-[x] cargo test passes (61 unit tests)
+[x] cargo test passes (63 unit tests)

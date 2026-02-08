@@ -33,6 +33,8 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
         .collect();
     let keep_last = boundaries.len().saturating_sub(1);
     if keep_last == 0 {
+        // Single exchange over budget — truncate oversized content blocks
+        truncate_oversized_blocks(conversation, max_bytes);
         return;
     }
     for &cut in &boundaries[1..=keep_last] {
@@ -51,6 +53,42 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
         boundaries[keep_last]
     );
     conversation.drain(..boundaries[keep_last]);
+    // Safety valve: if a single exchange exceeds budget (e.g. 1MB read_file result),
+    // truncate the largest text/tool_result content blocks to fit
+    truncate_oversized_blocks(conversation, max_bytes);
+}
+
+/// Last-resort truncation of oversized content blocks when a single exchange exceeds budget.
+fn truncate_oversized_blocks(conversation: &mut [Message], max_bytes: usize) {
+    let total: usize = conversation
+        .iter()
+        .map(|m| serde_json::to_string(m).map_or(0, |s| s.len()))
+        .sum();
+    if total <= max_bytes {
+        return;
+    }
+    let mut remaining = total - max_bytes;
+    for msg in conversation.iter_mut() {
+        for block in &mut msg.content {
+            if remaining == 0 {
+                return;
+            }
+            let text = match block {
+                ContentBlock::ToolResult { content, .. } => content,
+                ContentBlock::Text { text } => text,
+                _ => continue,
+            };
+            if text.len() > 10_000 {
+                let keep = text.len().saturating_sub(remaining).max(1_000);
+                let end = (keep..text.len())
+                    .find(|&i| text.is_char_boundary(i))
+                    .unwrap_or(keep);
+                remaining = remaining.saturating_sub(text.len() - end);
+                text.truncate(end);
+                text.push_str("\n... (truncated to fit context window)");
+            }
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -362,6 +400,51 @@ mod tests {
         let mut conv: Vec<Message> = Vec::new();
         trim_conversation(&mut conv, 100); // should not panic
         assert!(conv.is_empty());
+    }
+
+    #[test]
+    fn truncate_oversized_single_exchange() {
+        // When a single exchange has a huge tool result that exceeds the budget,
+        // trim_conversation falls back to truncating content blocks
+        let huge_result = "x".repeat(800_000); // 800KB > 720KB budget
+        let mut conv = vec![
+            user_text("read the big file"),
+            assistant_tool_use(),
+            user_tool_result(&huge_result),
+            assistant_text("got it"),
+        ];
+        // Budget much smaller than the huge result
+        let budget = 100_000;
+        trim_conversation(&mut conv, budget);
+        // Conversation should still have all 4 messages (single exchange can't be split)
+        assert_eq!(conv.len(), 4);
+        // But the huge tool result should be truncated
+        if let ContentBlock::ToolResult { content, .. } = &conv[2].content[0] {
+            assert!(
+                content.len() < huge_result.len(),
+                "content should be truncated"
+            );
+            assert!(
+                content.contains("truncated to fit context window"),
+                "should have truncation marker"
+            );
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
+    #[test]
+    fn truncate_oversized_skips_small_blocks() {
+        // Only blocks >10KB should be eligible for truncation
+        let mut conv = vec![
+            user_text("small text that should not be truncated"),
+            assistant_text(&"y".repeat(5_000)), // 5KB — below threshold
+        ];
+        // Even with tiny budget, small blocks should not be truncated
+        truncate_oversized_blocks(&mut conv, 100);
+        assert!(
+            matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "small text that should not be truncated")
+        );
     }
 
     #[test]
