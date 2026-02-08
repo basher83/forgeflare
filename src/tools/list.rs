@@ -39,3 +39,47 @@ fn walk(base: &Path, dir: &Path, files: &mut Vec<String>) -> std::io::Result<()>
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_current_dir() {
+        let result = execute(serde_json::json!({}));
+        assert!(result.is_ok());
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn list_specific_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/b.txt"), "").unwrap();
+        let result = execute(serde_json::json!({"path": dir.path().to_str().unwrap()}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(files.contains(&"a.txt".to_string()));
+        assert!(files.contains(&"sub/".to_string()));
+        assert!(files.contains(&"sub/b.txt".to_string()));
+    }
+
+    #[test]
+    fn list_excludes_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/config"), "").unwrap();
+        std::fs::write(dir.path().join("real.txt"), "").unwrap();
+        let result = execute(serde_json::json!({"path": dir.path().to_str().unwrap()}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(!files.iter().any(|f| f.contains(".git")));
+        assert!(files.contains(&"real.txt".to_string()));
+    }
+
+    #[test]
+    fn list_nonexistent_dir() {
+        let result = execute(serde_json::json!({"path": "/tmp/_nonexistent_forgeflare_test_dir_"}));
+        assert!(result.is_err());
+    }
+}

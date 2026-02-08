@@ -82,7 +82,8 @@ impl AnthropicClient {
         model: &str,
     ) -> Result<MessageResponse, AgentError> {
         let body = serde_json::json!({
-            "model": model, "max_tokens": 8096, "stream": true,
+            "model": model, "max_tokens": 8192, "stream": true,
+            "system": "You are a coding agent. You have tools to read files, list directories, run bash commands, edit files, and search code. Use them to help the user with software engineering tasks. Think step by step. When editing code, read the file first to understand context.",
             "messages": messages, "tools": tools
         });
         let response = self
@@ -185,5 +186,128 @@ impl AnthropicClient {
         Ok(MessageResponse {
             content: content_blocks,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_block_serialization() {
+        let block = ContentBlock::Text {
+            text: "hello".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "hello");
+    }
+
+    #[test]
+    fn tool_use_block_serialization() {
+        let block = ContentBlock::ToolUse {
+            id: "id-1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "tool_use");
+        assert_eq!(json["id"], "id-1");
+        assert_eq!(json["name"], "bash");
+        assert_eq!(json["input"]["command"], "ls");
+    }
+
+    #[test]
+    fn tool_result_block_serialization() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "id-1".into(),
+            content: "output".into(),
+            is_error: None,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "tool_result");
+        assert_eq!(json["tool_use_id"], "id-1");
+        assert!(json.get("is_error").is_none());
+    }
+
+    #[test]
+    fn tool_result_with_error_flag() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "id-2".into(),
+            content: "not found".into(),
+            is_error: Some(true),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["is_error"], true);
+    }
+
+    #[test]
+    fn message_roundtrip() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "test".into(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Message = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded.role, Role::User));
+        assert_eq!(decoded.content.len(), 1);
+    }
+
+    #[test]
+    fn content_block_deserialization() {
+        let json = r#"{"type":"text","text":"hello"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        assert!(matches!(block, ContentBlock::Text { text } if text == "hello"));
+    }
+
+    #[test]
+    fn tool_use_deserialization() {
+        let json = r#"{"type":"tool_use","id":"abc","name":"bash","input":{"command":"ls"}}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        if let ContentBlock::ToolUse { id, name, input } = block {
+            assert_eq!(id, "abc");
+            assert_eq!(name, "bash");
+            assert_eq!(input["command"], "ls");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn role_serialization() {
+        assert_eq!(serde_json::to_string(&Role::User).unwrap(), r#""user""#);
+        assert_eq!(
+            serde_json::to_string(&Role::Assistant).unwrap(),
+            r#""assistant""#
+        );
+    }
+
+    #[test]
+    fn tool_schema_serialization() {
+        let schema = ToolSchema {
+            name: "test".into(),
+            description: "A test tool".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let json = serde_json::to_value(&schema).unwrap();
+        assert_eq!(json["name"], "test");
+        assert_eq!(json["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn message_with_tool_result() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "id-1".into(),
+                content: "result".into(),
+                is_error: None,
+            }],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"][0]["type"], "tool_result");
     }
 }

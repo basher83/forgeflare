@@ -57,3 +57,54 @@ fn execute(input: Value) -> Result<String, String> {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_finds_pattern() {
+        let result = execute(serde_json::json!({"pattern": "fn execute", "path": "src/tools"}));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("fn execute"));
+    }
+
+    #[test]
+    fn search_no_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "nothing here").unwrap();
+        let result = execute(
+            serde_json::json!({"pattern": "will_not_match_anything", "path": dir.path().to_str().unwrap()}),
+        );
+        assert_eq!(result.unwrap(), "No matches found");
+    }
+
+    #[test]
+    fn search_missing_pattern() {
+        let result = execute(serde_json::json!({}));
+        assert_eq!(result.unwrap_err(), "pattern is required");
+    }
+
+    #[test]
+    fn search_empty_pattern() {
+        let result = execute(serde_json::json!({"pattern": ""}));
+        assert_eq!(result.unwrap_err(), "pattern is required");
+    }
+
+    #[test]
+    fn search_case_insensitive_default() {
+        let result = execute(serde_json::json!({"pattern": "FN EXECUTE", "path": "src/tools"}));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("fn execute"));
+    }
+
+    #[test]
+    fn search_with_file_type() {
+        let result =
+            execute(serde_json::json!({"pattern": "fn tool", "path": "src", "file_type": "rust"}));
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("fn tool"));
+    }
+}

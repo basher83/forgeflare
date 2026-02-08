@@ -76,3 +76,94 @@ pub fn dispatch_tool(tools: &[ToolDef], name: &str, input: Value, id: &str) -> C
         is_error,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_tools_returns_six() {
+        let tools = all_tools();
+        assert_eq!(tools.len(), 6);
+        let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"list_files"));
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"code_search"));
+        assert!(names.contains(&"registry"));
+    }
+
+    #[test]
+    fn registry_tool_lists_all() {
+        let result = registry_exec(Value::Null).unwrap();
+        let listing: Vec<Value> = serde_json::from_str(&result).unwrap();
+        assert_eq!(listing.len(), 6);
+        assert!(listing.iter().any(|t| t["name"] == "bash"));
+    }
+
+    #[test]
+    fn dispatch_known_tool() {
+        let tools = all_tools();
+        let block = dispatch_tool(
+            &tools,
+            "bash",
+            serde_json::json!({"command": "echo dispatch_test"}),
+            "test-id",
+        );
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = block
+        {
+            assert_eq!(tool_use_id, "test-id");
+            assert!(content.contains("dispatch_test"));
+            assert!(is_error.is_none());
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
+    #[test]
+    fn dispatch_unknown_tool() {
+        let tools = all_tools();
+        let block = dispatch_tool(&tools, "nonexistent", Value::Null, "id-1");
+        if let ContentBlock::ToolResult {
+            content, is_error, ..
+        } = block
+        {
+            assert!(content.contains("not found"));
+            assert_eq!(is_error, Some(true));
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
+    #[test]
+    fn dispatch_tool_error_propagates() {
+        let tools = all_tools();
+        let block = dispatch_tool(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "/tmp/_nonexistent_forgeflare_"}),
+            "id-2",
+        );
+        if let ContentBlock::ToolResult { is_error, .. } = block {
+            assert_eq!(is_error, Some(true));
+        } else {
+            panic!("expected ToolResult");
+        }
+    }
+
+    #[test]
+    fn tools_as_schemas_matches_tools() {
+        let tools = all_tools();
+        let schemas = tools_as_schemas(&tools);
+        assert_eq!(schemas.len(), tools.len());
+        for (tool, schema) in tools.iter().zip(schemas.iter()) {
+            assert_eq!(tool.name, schema.name);
+            assert_eq!(tool.description, schema.description);
+        }
+    }
+}
