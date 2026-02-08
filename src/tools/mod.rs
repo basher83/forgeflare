@@ -48,11 +48,8 @@ fn read_exec(input: Value) -> Result<String, String> {
     let path = input["path"].as_str().ok_or("path is required")?;
     let meta = fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if meta.len() > MAX_READ_SIZE {
-        return Err(format!(
-            "{path}: {}KB exceeds {}KB limit",
-            meta.len() / 1024,
-            MAX_READ_SIZE / 1024
-        ));
+        let (size, max) = (meta.len() / 1024, MAX_READ_SIZE / 1024);
+        return Err(format!("{path}: {size}KB exceeds {max}KB limit"));
     }
     let raw = fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     if raw[..raw.len().min(8192)].contains(&0) {
@@ -205,11 +202,9 @@ fn search_exec(input: Value) -> Result<String, String> {
         args.push("--ignore-case");
     }
     if let Some(ft) = input["file_type"].as_str() {
-        args.push("--type");
-        args.push(ft);
+        args.extend(["--type", ft]);
     }
-    args.push(pattern);
-    args.push(path);
+    args.extend([pattern, path]);
     let output = Command::new("rg")
         .args(&args)
         .output()
@@ -218,22 +213,17 @@ fn search_exec(input: Value) -> Result<String, String> {
         return Ok("No matches found".into());
     }
     if !output.status.success() {
-        return Err(format!(
-            "search failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("search failed: {err}"));
     }
     let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let lines: Vec<&str> = result.lines().collect();
-    if lines.len() > 50 {
-        Ok(format!(
-            "{}\n... (showing 50 of {} matches)",
-            lines[..50].join("\n"),
-            lines.len()
-        ))
-    } else {
-        Ok(result)
+    if lines.len() <= 50 {
+        return Ok(result);
     }
+    let shown = lines[..50].join("\n");
+    let total = lines.len();
+    Ok(format!("{shown}\n... (showing 50 of {total} matches)"))
 }
 
 #[cfg(test)]

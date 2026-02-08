@@ -163,12 +163,11 @@ impl SseParser {
     fn finish(mut self) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
         self.blocks
             .retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
+        let no_stop = AgentError::StreamParse("stream ended without stop_reason".into());
         let stop = self
             .stop_reason
             .or(self.message_complete.then_some(StopReason::EndTurn))
-            .ok_or(AgentError::StreamParse(
-                "stream ended without stop_reason".into(),
-            ))?;
+            .ok_or(no_stop)?;
         Ok((self.blocks, stop))
     }
 }
@@ -225,6 +224,9 @@ impl AnthropicClient {
                 buf.drain(..nl + 1);
                 parser.process_line(&line)?;
             }
+        }
+        if !buf.trim().is_empty() {
+            parser.process_line(buf.trim())?; // trailing data without final newline
         }
         parser.finish()
     }
@@ -637,6 +639,39 @@ mod tests {
         let (blocks, stop) = parser.finish().unwrap();
         assert_eq!(stop, StopReason::EndTurn);
         assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn sse_trailing_data_without_newline() {
+        // Simulates a stream where the final message_delta line has no trailing newline.
+        // Before the fix, this data would be silently dropped, causing "stream ended
+        // without stop_reason". The trailing buffer processing now handles this.
+        let mut parser = SseParser::default();
+        parser
+            .process_line(r#"event: content_block_start"#)
+            .unwrap();
+        parser
+            .process_line(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#)
+            .unwrap();
+        parser
+            .process_line(r#"event: content_block_delta"#)
+            .unwrap();
+        parser
+            .process_line(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#)
+            .unwrap();
+        parser.process_line(r#"event: content_block_stop"#).unwrap();
+        parser
+            .process_line(r#"data: {"type":"content_block_stop","index":0}"#)
+            .unwrap();
+        parser.process_line(r#"event: message_delta"#).unwrap();
+        // This is the "trailing" line that would be in the buffer without a newline
+        parser
+            .process_line(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
+            .unwrap();
+        let (blocks, stop) = parser.finish().unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "hi"));
     }
 
     #[test]

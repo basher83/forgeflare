@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~675 production lines across 3 source files with 80 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~697 production lines across 3 source files with 81 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 80 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 81 unit tests.
 
 File structure:
-- src/main.rs (~232 production lines)
-- src/api.rs (~217 production lines)
-- src/tools/mod.rs (~226 production lines)
-- Total: ~675 production lines + ~924 test lines
+- src/main.rs (~235 production lines)
+- src/api.rs (~234 production lines)
+- src/tools/mod.rs (~228 production lines)
+- Total: ~697 production lines
 
 ## Architectural Decisions
 
@@ -94,6 +94,12 @@ Piped stdin must be read as a single prompt, not line-by-line. The Go reference 
 
 `truncate_with_marker` while loop was vulnerable to underflow. The `while !s.is_char_boundary(end) { end -= 1; }` pattern can panic on subtraction underflow if `end` reaches 0 without finding a boundary (impossible in practice for 100KB+ strings, but violates the no-panics contract). Replaced with `(0..=max).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)` which is both safe and consistent with the Range::find pattern already used in `truncate_oversized_blocks`.
 
+SSE buffer residual data after stream end. The SSE parsing loop only processes lines terminated by `\n`. If the stream's final chunk doesn't end with a newline, the last event (often `message_delta` with `stop_reason`) is silently dropped, causing a false "stream ended without stop_reason" error. Fixed by processing the trailing buffer after the stream loop exits.
+
+API error mid-tool-loop leaves orphaned tool_use. When `send_message` fails after a tool_use response was received and tool results were sent, the error handler popped the trailing User(tool_results) but left the Assistant(tool_use) message. The API requires every `tool_use` to have a matching `tool_result` in the next User message — so the next call would fail with 400. Fixed by also popping the orphaned Assistant message when the popped User message contained tool_results. Uses `Vec::pop_if` (stable since Rust 1.86) for a compact implementation in `recover_conversation`.
+
+Inline format args compress multi-line eprintln to single-line. rustfmt expands `eprintln!("... {}", expr)` to multiple lines when the format string + arg exceed the line width. Binding the expression to `let n = expr` first allows `eprintln!("... {n}")` which fits on one line. This pattern saved ~6 production lines across main.rs.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -116,8 +122,8 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target <700 maintained at ~675 with piped stdin support and Option::take() simplification.
-- SSE parser now has 13 unit tests covering the full event processing state machine.
+- Line target <700 maintained at ~697 after bug fixes (SSE trailing buffer, orphaned tool_use recovery).
+- SSE parser now has 14 unit tests covering the full event processing state machine.
 
 ## Verification Checklist
 
@@ -154,9 +160,10 @@ The specification has been updated to reflect implementation decisions:
 [x] cargo fmt --check passes
 [x] cargo clippy -- -D warnings passes
 [x] cargo build --release passes
-[x] API error recovery: pop trailing User message to maintain alternation invariant
-[x] SSE parser extracted into testable SseParser struct with 13 tests
+[x] API error recovery: pop trailing User message + orphaned tool_use to maintain alternation
+[x] SSE trailing buffer: process data without final newline to prevent false incomplete-stream errors
+[x] SSE parser extracted into testable SseParser struct with 14 tests
 [x] list_files output sorted for deterministic results
 [x] Tool loop iteration limit (50) prevents runaway agent behavior
 [x] Piped stdin reads all input as single prompt (R5)
-[x] cargo test passes (80 unit tests)
+[x] cargo test passes (81 unit tests)

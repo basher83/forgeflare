@@ -9,6 +9,16 @@ use tools::{all_tool_schemas, dispatch_tool};
 const MAX_CONVERSATION_BYTES: usize = 720_000; // ~180K tokens at ~4 chars/token
 const MAX_TOOL_ITERATIONS: usize = 50; // Safety limit for tool dispatch loop
 
+/// Pop trailing User message on API error; if it was tool_results, also pop orphaned tool_use.
+fn recover_conversation(conversation: &mut Vec<Message>) {
+    let was_tool_results = conversation
+        .pop_if(|m| matches!(m.role, Role::User))
+        .is_some_and(|m| matches!(m.content.first(), Some(ContentBlock::ToolResult { .. })));
+    if was_tool_results {
+        conversation.pop_if(|m| matches!(m.role, Role::Assistant));
+    }
+}
+
 /// Trim conversation at exchange boundaries, preserving tool_use/tool_result pairs.
 fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
     let sizes: Vec<usize> = conversation
@@ -45,11 +55,9 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
             return;
         }
     }
-    eprintln!(
-        "\x1b[93m[context]\x1b[0m Trimmed to last exchange ({} messages dropped)",
-        boundaries[keep_last]
-    );
-    conversation.drain(..boundaries[keep_last]);
+    let dropped = boundaries[keep_last];
+    eprintln!("\x1b[93m[context]\x1b[0m Trimmed to last exchange ({dropped} messages dropped)");
+    conversation.drain(..dropped);
     truncate_oversized_blocks(conversation, max_bytes);
 }
 
@@ -157,10 +165,8 @@ async fn main() {
                 break;
             }
             if cli.verbose {
-                eprintln!(
-                    "[verbose] Sending message, conversation len: {}",
-                    conversation.len()
-                );
+                let n = conversation.len();
+                eprintln!("[verbose] Sending message, conversation len: {n}");
             }
             trim_conversation(&mut conversation, MAX_CONVERSATION_BYTES);
             let (response, stop_reason) = match client
@@ -170,21 +176,13 @@ async fn main() {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("\x1b[91mError\x1b[0m: {e}");
-                    // Pop trailing User message to maintain alternation invariant
-                    if conversation
-                        .last()
-                        .is_some_and(|m| matches!(m.role, Role::User))
-                    {
-                        conversation.pop();
-                    }
+                    recover_conversation(&mut conversation);
                     break;
                 }
             };
             if cli.verbose {
-                eprintln!(
-                    "[verbose] Received {} blocks, stop: {stop_reason:?}",
-                    response.len()
-                );
+                let n = response.len();
+                eprintln!("[verbose] Received {n} blocks, stop: {stop_reason:?}");
             }
             conversation.push(Message {
                 role: Role::Assistant,
@@ -224,10 +222,8 @@ async fn main() {
             }
             tool_iterations += 1;
             if cli.verbose {
-                eprintln!(
-                    "[verbose] Sending {} tool results (iteration {tool_iterations})",
-                    tool_results.len()
-                );
+                let n = tool_results.len();
+                eprintln!("[verbose] Sending {n} tool results (iteration {tool_iterations})");
             }
             conversation.push(Message {
                 role: Role::User,
@@ -493,49 +489,38 @@ mod tests {
 
     #[test]
     fn api_error_recovery_pops_dangling_user_text() {
-        // Simulates what happens when send_message fails on the first inner-loop iteration:
-        // the user's text message was already pushed, so we must pop it to maintain
-        // user/assistant alternation. Without this, the next user input creates
-        // consecutive User messages which the API rejects.
+        // send_message fails on first inner-loop iteration: pop the user's text message
         let mut conv = vec![
             user_text("first question"),
             assistant_text("first answer"),
-            user_text("second question"), // pushed before send_message, which then fails
+            user_text("second question"),
         ];
-        // The fix: pop trailing User message when API fails
-        if conv.last().is_some_and(|m| matches!(m.role, Role::User)) {
-            conv.pop();
-        }
+        recover_conversation(&mut conv);
         assert_eq!(conv.len(), 2);
         assert!(matches!(conv.last().unwrap().role, Role::Assistant));
     }
 
     #[test]
-    fn api_error_recovery_pops_dangling_tool_results() {
-        // Simulates what happens when send_message fails mid-tool-loop:
-        // after a successful assistant response with tool_use, tool results are pushed
-        // as a User message, then the next send_message fails. The trailing User(tool_results)
-        // must be popped to maintain alternation.
+    fn api_error_recovery_pops_tool_results_and_orphaned_tool_use() {
+        // send_message fails mid-tool-loop: pop tool_results AND the orphaned tool_use.
+        // Without this, the API rejects because tool_use has no matching tool_result.
         let mut conv = vec![
             user_text("do something"),
             assistant_tool_use(),
-            user_tool_result("tool output"), // tool results sent, but next API call fails
+            user_tool_result("tool output"),
         ];
-        if conv.last().is_some_and(|m| matches!(m.role, Role::User)) {
-            conv.pop();
-        }
-        assert_eq!(conv.len(), 2);
-        assert!(matches!(conv.last().unwrap().role, Role::Assistant));
+        recover_conversation(&mut conv);
+        assert_eq!(conv.len(), 1);
+        assert!(
+            matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "do something")
+        );
     }
 
     #[test]
     fn api_error_recovery_noop_when_last_is_assistant() {
-        // If conversation ends with Assistant (normal state), the pop should not fire
         let mut conv = vec![user_text("hello"), assistant_text("hi")];
-        if conv.last().is_some_and(|m| matches!(m.role, Role::User)) {
-            conv.pop();
-        }
-        assert_eq!(conv.len(), 2); // unchanged
+        recover_conversation(&mut conv);
+        assert_eq!(conv.len(), 2);
         assert!(matches!(conv.last().unwrap().role, Role::Assistant));
     }
 }
