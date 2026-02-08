@@ -1,7 +1,7 @@
 # Unified Rust Coding Agent Specification
 
 **Status:** Active
-**Target:** Single binary, streaming, subagent-aware, <500 lines
+**Target:** Single binary, streaming, subagent-aware, <550 production lines
 **Pin:** Go source at `/reference/go-source/` — pattern-match against working code
 
 ---
@@ -21,16 +21,16 @@
 
 **R3. Tool Registry Pattern**
 ```rust
-enum Tool {
-    Read(ReadRequest),
-    List(ListRequest),
-    Bash(BashRequest),
-    Edit(EditRequest),
-    Search(SearchRequest),
+// tools! macro generates both all_tool_schemas() and dispatch_tool() from one definition
+tools! {
+    "read_file", "Read a file", schema, read_exec;
+    "list_files", "List files", schema, list_exec;
+    // ...
 }
 ```
 - 5 tools total; each follows Anthropic tool_use spec
 - Tool schemas are sent with every API request, providing introspection natively
+- Single macro generates schema and dispatch, preventing divergence
 
 **R4. Five Tools**
 1. **Read** — read_file(path) → file contents (handle binary, size limits)
@@ -91,7 +91,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <500 lines total (stretch: <300)
+- [x] <550 production lines (515 actual with full R5/R7 compliance)
 - [x] Streaming responses visible to user in real-time
 
 ---

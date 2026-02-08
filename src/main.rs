@@ -1,9 +1,9 @@
 mod api;
 mod tools;
 
-use api::{AnthropicClient, ContentBlock, Message, Role};
+use api::{AnthropicClient, ContentBlock, Message, Role, StopReason};
 use clap::Parser;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use tools::{all_tool_schemas, dispatch_tool};
 
 #[derive(Parser)]
@@ -26,12 +26,17 @@ async fn main() {
     if cli.verbose {
         eprintln!("[verbose] Initialized {} tools", schemas.len());
     }
-    println!("Chat with Claude (type 'exit' or Ctrl-D to quit)");
+    let interactive = std::io::stdin().is_terminal();
+    if interactive {
+        println!("Chat with Claude (type 'exit' or Ctrl-D to quit)");
+    }
     let mut conversation: Vec<Message> = Vec::new();
     let stdin = std::io::stdin();
     loop {
-        print!("\x1b[94mYou\x1b[0m: ");
-        std::io::stdout().flush().ok();
+        if interactive {
+            print!("\x1b[94mYou\x1b[0m: ");
+            std::io::stdout().flush().ok();
+        }
         let mut input = String::new();
         if stdin.read_line(&mut input).map_or(true, |n| n == 0) {
             break;
@@ -52,16 +57,15 @@ async fn main() {
                 text: input.to_string(),
             }],
         });
-        // Inner loop: send message, dispatch tools, repeat until no tool_use
-        // R8: subagent dispatch integration point — tool results could route to child agents
+        // Inner loop: send → dispatch tools → repeat (R8: subagent dispatch integration point)
         loop {
             if cli.verbose {
                 eprintln!(
-                    "[verbose] Sending message, conversation length: {}",
+                    "[verbose] Sending message, conversation len: {}",
                     conversation.len()
                 );
             }
-            let response = match client
+            let (response, stop_reason) = match client
                 .send_message(&conversation, &schemas, &cli.model)
                 .await
             {
@@ -72,12 +76,18 @@ async fn main() {
                 }
             };
             if cli.verbose {
-                eprintln!("[verbose] Received {} content blocks", response.len());
+                eprintln!(
+                    "[verbose] Received {} blocks, stop: {stop_reason:?}",
+                    response.len()
+                );
             }
             conversation.push(Message {
                 role: Role::Assistant,
                 content: response.clone(),
             });
+            if stop_reason == StopReason::EndTurn {
+                break;
+            }
             let mut tool_results: Vec<ContentBlock> = Vec::new();
             for block in &response {
                 if let ContentBlock::ToolUse { id, name, input } = block {
@@ -105,10 +115,7 @@ async fn main() {
                 break;
             }
             if cli.verbose {
-                eprintln!(
-                    "[verbose] Sending {} tool results back to Claude",
-                    tool_results.len()
-                );
+                eprintln!("[verbose] Sending {} tool results", tool_results.len());
             }
             conversation.push(Message {
                 role: Role::User,

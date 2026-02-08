@@ -15,6 +15,12 @@ pub enum AgentError {
     StreamParse(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum StopReason {
+    EndTurn,
+    ToolUse,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -74,7 +80,7 @@ impl AnthropicClient {
         messages: &[Message],
         tools: &[Value],
         model: &str,
-    ) -> Result<Vec<ContentBlock>, AgentError> {
+    ) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
         let body = serde_json::json!({
             "model": model, "max_tokens": 8192, "stream": true,
             "system": "You are a coding agent. You have tools to read files, list directories, run bash commands, edit files, and search code. Use them to help the user with software engineering tasks. Think step by step. When editing code, read the file first to understand context.",
@@ -100,6 +106,7 @@ impl AnthropicClient {
         let (mut buf, mut event) = (String::new(), String::new());
         let mut blocks: Vec<ContentBlock> = Vec::new();
         let mut fragments: Vec<String> = Vec::new();
+        let mut stop_reason = StopReason::EndTurn;
 
         while let Some(chunk) = stream.next().await {
             buf.push_str(&String::from_utf8_lossy(&chunk?));
@@ -163,11 +170,16 @@ impl AnthropicClient {
                             println!();
                         }
                     }
+                    "message_delta" => {
+                        if p["delta"]["stop_reason"].as_str() == Some("tool_use") {
+                            stop_reason = StopReason::ToolUse;
+                        }
+                    }
                     _ => {}
                 }
             }
         }
-        Ok(blocks)
+        Ok((blocks, stop_reason))
     }
 }
 
@@ -290,5 +302,18 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["role"], "user");
         assert_eq!(json["content"][0]["type"], "tool_result");
+    }
+
+    #[test]
+    fn stop_reason_equality() {
+        assert_eq!(StopReason::EndTurn, StopReason::EndTurn);
+        assert_eq!(StopReason::ToolUse, StopReason::ToolUse);
+        assert_ne!(StopReason::EndTurn, StopReason::ToolUse);
+    }
+
+    #[test]
+    fn stop_reason_debug_format() {
+        assert_eq!(format!("{:?}", StopReason::EndTurn), "EndTurn");
+        assert_eq!(format!("{:?}", StopReason::ToolUse), "ToolUse");
     }
 }
