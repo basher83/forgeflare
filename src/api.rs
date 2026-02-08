@@ -107,7 +107,8 @@ impl AnthropicClient {
         let (mut buf, mut event) = (String::new(), String::new());
         let mut blocks: Vec<ContentBlock> = Vec::new();
         let mut fragments: Vec<String> = Vec::new();
-        let mut stop_reason = StopReason::EndTurn;
+        let mut stop_reason: Option<StopReason> = None;
+        let mut message_complete = false;
 
         while let Some(chunk) = stream.next().await {
             buf.push_str(&String::from_utf8_lossy(&chunk?));
@@ -178,10 +179,12 @@ impl AnthropicClient {
                         }
                     }
                     "message_delta" => match p["delta"]["stop_reason"].as_str() {
-                        Some("tool_use") => stop_reason = StopReason::ToolUse,
-                        Some("max_tokens") => stop_reason = StopReason::MaxTokens,
+                        Some("end_turn") => stop_reason = Some(StopReason::EndTurn),
+                        Some("tool_use") => stop_reason = Some(StopReason::ToolUse),
+                        Some("max_tokens") => stop_reason = Some(StopReason::MaxTokens),
                         _ => {}
                     },
+                    "message_stop" => message_complete = true,
                     "error" => {
                         let msg = p["error"]["message"]
                             .as_str()
@@ -194,6 +197,17 @@ impl AnthropicClient {
         }
         // Filter out placeholder blocks from unknown SSE content types (e.g. thinking)
         blocks.retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
+        // Detect incomplete streams: if message_delta never delivered a stop_reason,
+        // the connection was dropped mid-stream
+        let stop_reason = match stop_reason {
+            Some(r) => r,
+            None if message_complete => StopReason::EndTurn, // defensive: stop received but no delta
+            None => {
+                return Err(AgentError::StreamParse(
+                    "stream ended without stop_reason (connection dropped?)".into(),
+                ));
+            }
+        };
         Ok((blocks, stop_reason))
     }
 }

@@ -162,11 +162,19 @@ fn bash_exec(input: Value) -> Result<String, String> {
     let stderr = stderr_handle
         .and_then(|h| h.join().ok())
         .unwrap_or_default();
-    let mut output = if !status.success() {
-        format!("Command failed ({status}): {stdout}{stderr}")
-    } else {
-        format!("{stdout}{stderr}").trim().to_string()
-    };
+    let mut output = format!("{stdout}{stderr}").trim().to_string();
+    if !status.success() {
+        let msg = format!("Command failed ({status}): {output}");
+        // Truncate error output too
+        if msg.len() > MAX_BASH_OUTPUT {
+            let mut end = MAX_BASH_OUTPUT;
+            while !msg.is_char_boundary(end) {
+                end -= 1;
+            }
+            return Err(format!("{}\n... (output truncated at 100KB)", &msg[..end]));
+        }
+        return Err(msg);
+    }
     if output.len() > MAX_BASH_OUTPUT {
         // Find nearest char boundary at or before MAX_BASH_OUTPUT
         let mut end = MAX_BASH_OUTPUT;
@@ -474,8 +482,8 @@ mod tests {
     #[test]
     fn bash_failing_command() {
         let result = bash_exec(serde_json::json!({"command": "false"}));
-        let output = result.unwrap();
-        assert!(output.starts_with("Command failed"));
+        let err = result.unwrap_err();
+        assert!(err.starts_with("Command failed"));
     }
 
     #[test]
@@ -612,23 +620,25 @@ mod tests {
     }
 
     #[test]
-    fn bash_timeout_returns_error() {
-        // Verify dispatch wraps timeout as is_error: true by testing the error path directly
-        // (actual timeout test would take 120s, so we test the Err propagation contract)
+    fn bash_failed_command_signals_is_error() {
+        // Non-zero exit returns Err, which dispatch_tool maps to is_error: Some(true).
+        // This matches the Anthropic API protocol: tool failures should set is_error.
         let result = bash_exec(serde_json::json!({"command": "exit 0"}));
         assert!(result.is_ok(), "successful commands return Ok");
-        // The timeout path returns Err(...), which dispatch_tool maps to is_error: Some(true).
-        // We can't easily trigger a real timeout in a unit test without waiting 120s,
-        // but we verify the contract: Err from bash_exec → is_error on ToolResult.
+
         let block = dispatch_tool(
             "bash",
             serde_json::json!({"command": "false"}),
-            "timeout-test",
+            "error-test",
         );
-        // "false" exits with 1, which is Ok("Command failed ...") — not an error.
-        // This confirms the distinction: failed commands are Ok, timeouts would be Err.
-        if let ContentBlock::ToolResult { is_error, .. } = &block {
-            assert!(is_error.is_none(), "failed commands are Ok (not is_error)");
+        if let ContentBlock::ToolResult {
+            content, is_error, ..
+        } = &block
+        {
+            assert_eq!(*is_error, Some(true), "failed commands set is_error");
+            assert!(content.contains("Command failed"));
+        } else {
+            panic!("expected ToolResult");
         }
     }
 

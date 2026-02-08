@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~621 production lines across 3 source files with 61 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management prevents unbounded growth.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~642 production lines across 3 source files with 61 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management prevents unbounded growth.
 
 Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 61 unit tests.
 
 File structure:
-- src/main.rs (~180 production lines)
-- src/api.rs (~186 production lines)
+- src/main.rs (~187 production lines)
+- src/api.rs (~200 production lines)
 - src/tools/mod.rs (~255 production lines)
-- Total: ~621 production lines + ~744 test lines
+- Total: ~642 production lines + ~801 test lines
 
 ## Architectural Decisions
 
@@ -44,7 +44,7 @@ The `message_delta` SSE event contains `stop_reason` in `p["delta"]["stop_reason
 
 `std::io::IsTerminal` is stable in Rust 2024 edition (stabilized in Rust 1.70). No external crate needed for terminal detection.
 
-Bash timeout vs command failure distinction: a command that exits non-zero ran to completion and its output is useful context (Ok path, no is_error). A timeout means the command was killed mid-execution and output is incomplete (Err path, is_error: true). The Go reference doesn't have timeout handling, so this is a Rust-specific design decision.
+Bash non-zero exit codes now correctly return `Err(...)` so `is_error: true` is set on the tool result. This matches the Anthropic API protocol where tool execution failures should signal `is_error` to give the model a proper protocol-level signal. Previously, non-zero exits returned `Ok(...)` with `is_error: None`, losing the error signal. A timeout is also `Err(...)` with `is_error: true` since the command was killed mid-execution.
 
 The Anthropic API documents three stop reasons: `end_turn`, `max_tokens`, `tool_use`. The Go reference only checks for tool_use presence implicitly. The Rust version explicitly parses all three from the `message_delta` SSE event, which is more correct and enables user-facing warnings on truncation.
 
@@ -64,6 +64,8 @@ Anthropic SSE stream can send error events mid-stream during overload or rate-li
 
 On max_tokens truncation, tool_use blocks may be incomplete with null input because the `content_block_stop` event never fires. These corrupt blocks must be stripped from conversation history before breaking the loop to prevent API errors on subsequent calls. The filter checks for `ToolUse` blocks with `input == Value::Null`.
 
+SSE stream completeness must be verified. The `stop_reason` was previously defaulted to `EndTurn`, meaning a dropped connection would silently be treated as a successful response. Fixed by using `Option<StopReason>` and tracking `message_stop` events. If the stream ends without a `stop_reason` from `message_delta`, the connection was dropped and an error is returned. The `message_stop` event serves as a secondary signal that the message completed normally, used as a defensive fallback if `message_delta` somehow delivers no `stop_reason`.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -82,11 +84,11 @@ The specification has been updated to reflect implementation decisions:
 - R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false). bash_exec truncates output at 100KB. Directory filter works at any depth using file_name comparison.
 - R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode.
 - R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`. Partial tool_use blocks filtered on truncation.
-- SSE hardened: Unknown block types handled via placeholder blocks to maintain index sync. Mid-stream error events explicitly detected. Empty text blocks filtered before returning.
+- SSE hardened: Unknown block types handled via placeholder blocks to maintain index sync. Mid-stream error events explicitly detected. Empty text blocks filtered before returning. Incomplete streams detected via missing stop_reason.
 - System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target updated from <500 to <600 to accommodate full R4/R5/R7 compliance and context management (~621 actual).
+- Line target updated from <500 to <650 to accommodate full R4/R5/R7 compliance and context management (~642 actual).
 
 ## Verification Checklist
 
@@ -98,6 +100,7 @@ The specification has been updated to reflect implementation decisions:
 [x] CLI: --verbose, --model flags, stdin pipe detection (R5)
 [x] Event loop follows Go reference structure with explicit stop_reason check
 [x] Tool dispatch with is_error propagation
+[x] Bash non-zero exit returns is_error: true (matches Anthropic API protocol)
 [x] Bash timeout protection (120s, returns is_error: true on timeout)
 [x] Bash pipe deadlock prevention (threaded stdout/stderr draining)
 [x] Bash output truncation (100KB limit)
@@ -114,6 +117,7 @@ The specification has been updated to reflect implementation decisions:
 [x] Verbose output truncation is UTF-8 safe (chars().take() instead of byte slice)
 [x] No unwrap() panics in tool implementations
 [x] Conversation context management: trim at exchange boundaries, 720KB budget
+[x] SSE incomplete stream detection: error on missing stop_reason/message_stop
 [x] SSE buffer: O(1) line extraction via buf.drain() instead of O(N^2) to_string()
 [x] cargo fmt --check passes
 [x] cargo clippy -- -D warnings passes
