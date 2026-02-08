@@ -1,0 +1,149 @@
+# Unified Rust Coding Agent Specification
+
+**Status:** Active
+**Target:** Single binary, streaming, subagent-aware, <500 lines
+**Pin:** Go source at `/reference/go-source/` — pattern-match against working code
+
+---
+
+## Requirements
+
+**R1. Core Loop**
+- REPL: read user input → call Claude API → dispatch tools → repeat
+- Streaming responses (SSE, not batch) from day 1
+- Conversation history management (add user input, add assistant message to context array)
+
+**R2. HTTP Client**
+- Build own with `reqwest` (not third-party Anthropic crate)
+- Anthropic API: POST to `/v1/messages`
+- Handle SSE for streaming responses
+- Expose `ANTHROPIC_API_KEY` env var
+
+**R3. Tool Registry Pattern**
+```rust
+enum Tool {
+    Read(ReadRequest),
+    List(ListRequest),
+    Bash(BashRequest),
+    Edit(EditRequest),
+    Search(SearchRequest),
+    Registry(RegistryRequest),
+}
+```
+- Registry tool returns available tools + signatures (introspection for LLM)
+- 6 tools total; each follows Anthropic tool_use spec
+
+**R4. Six Tools**
+1. **Read** — read_file(path) → file contents (handle binary, size limits)
+2. **List** — list_files(path, recursive?) → [files]
+3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout)
+4. **Edit** — edit_file(path, old_str, new_str) → success/error (exact match semantics)
+5. **Search** — search(pattern, path?) → matches (shell out to `rg`)
+6. **Registry** — registry() → [Tool]
+
+**R5. CLI Interface**
+- Single binary, no subcommands required
+- `--verbose` flag for debug output
+- `--model` flag (default: claude-opus-4-6)
+- Read prompts/context from stdin if available, interactive prompt otherwise
+- Exit gracefully on EOF or "exit" command
+
+**R6. Error Handling**
+- `thiserror` for custom error types (per-module)
+- `anyhow` for propagation in main
+- Tool errors returned as text in tool_result field
+- Display errors to user, continue loop (don't panic)
+
+**R7. Streaming Architecture**
+- Collect SSE events into a response buffer
+- Check `stop_reason` for "tool_use" vs "end_turn"
+- If tool_use: extract tool calls, execute, send results back
+- If end_turn: display response to user, prompt for next input
+
+**R8. Subagent Awareness**
+- Reserved field in context: `subagent_id` (future: dispatch to child agents)
+- Types for subagent coordination defined but not implemented
+- Comments marking future subagent integration points
+
+---
+
+## Architecture
+
+```
+src/
+  main.rs         — CLI, loop, error handling
+  api.rs          — Anthropic client (reqwest + SSE)
+  tools/
+    mod.rs        — Tool registry pattern
+    read.rs       — read_file
+    list.rs       — list_files
+    bash.rs       — bash execution
+    edit.rs       — edit_file
+    search.rs     — ripgrep wrapper
+    registry.rs   — tool introspection
+
+reference/
+  go-source/      — Cloned Go workshop code (pin)
+```
+
+---
+
+## Success Criteria
+
+- [ ] Binary compiles (`cargo build`)
+- [ ] Tests pass (`cargo test`)
+- [ ] Clippy clean (`cargo clippy -- -D warnings`)
+- [ ] Formatted (`cargo fmt --check`)
+- [ ] Can chat with Claude
+- [ ] Can read files
+- [ ] Can list directories
+- [ ] Can run bash commands
+- [ ] Can edit files (exact-match semantics)
+- [ ] Can search code
+- [ ] <500 lines total (stretch: <300)
+- [ ] Streaming responses visible to user in real-time
+
+---
+
+## Dependencies
+
+- `reqwest` — HTTP client (with stream feature)
+- `serde` + `serde_json` — JSON serialization
+- `tokio` — async runtime (full features)
+- `clap` — CLI parsing (derive feature)
+- `thiserror` — error types
+- `anyhow` — error propagation
+
+---
+
+## Non-Goals
+
+- Progressive binaries (Phases 1-3 merged into single unified agent)
+- Batch mode (streaming from day 1)
+- Provider abstraction (Anthropic only)
+- Interactive line editing (simple readline via stdin)
+- Subagent execution (types only, comments for future work)
+
+---
+
+## Implementation Notes
+
+- Use exact match for `edit_file` (one old_str appearance exactly, new_str differs)
+- Tool dispatch is synchronous; async only for HTTP and command execution
+- Context accumulates in memory; no persistence layer
+- No automatic retry; failures return to user for decision
+- Search tool shells out to `rg` (must be installed)
+
+---
+
+## Reference: Go Source
+
+The Go workshop (`reference/go-source/`) contains 6 progressive versions:
+- `chat.go` — bare event loop
+- `read.go` — +read_file tool
+- `list_files.go` — +list_files tool
+- `bash_tool.go` — +bash tool
+- `edit_tool.go` — +edit_file tool
+- `code_search_tool.go` — +code_search tool
+
+Study the event loop in `edit_tool.go` (lines 126-214) as the canonical loop pattern. The Rust implementation should follow the same structure: API call → check response → dispatch tools → send results → repeat.

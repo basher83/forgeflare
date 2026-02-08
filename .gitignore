@@ -1,0 +1,9 @@
+/target/
+Cargo.lock
+.DS_Store
+.claude/ralph-activity.log
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
