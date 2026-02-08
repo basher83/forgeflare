@@ -158,6 +158,15 @@ async fn main() {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("\x1b[91mError\x1b[0m: {e}");
+                    // Remove the last user message to maintain alternation invariant.
+                    // Without this, the next user input creates consecutive User messages
+                    // which the API rejects with 400.
+                    if conversation
+                        .last()
+                        .is_some_and(|m| matches!(m.role, Role::User))
+                    {
+                        conversation.pop();
+                    }
                     break;
                 }
             };
@@ -475,5 +484,53 @@ mod tests {
         assert_eq!(msg.content.len(), 2);
         assert!(matches!(&msg.content[0], ContentBlock::Text { .. }));
         assert!(matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "bash"));
+    }
+
+    #[test]
+    fn api_error_recovery_pops_dangling_user_text() {
+        // Simulates what happens when send_message fails on the first inner-loop iteration:
+        // the user's text message was already pushed, so we must pop it to maintain
+        // user/assistant alternation. Without this, the next user input creates
+        // consecutive User messages which the API rejects.
+        let mut conv = vec![
+            user_text("first question"),
+            assistant_text("first answer"),
+            user_text("second question"), // pushed before send_message, which then fails
+        ];
+        // The fix: pop trailing User message when API fails
+        if conv.last().is_some_and(|m| matches!(m.role, Role::User)) {
+            conv.pop();
+        }
+        assert_eq!(conv.len(), 2);
+        assert!(matches!(conv.last().unwrap().role, Role::Assistant));
+    }
+
+    #[test]
+    fn api_error_recovery_pops_dangling_tool_results() {
+        // Simulates what happens when send_message fails mid-tool-loop:
+        // after a successful assistant response with tool_use, tool results are pushed
+        // as a User message, then the next send_message fails. The trailing User(tool_results)
+        // must be popped to maintain alternation.
+        let mut conv = vec![
+            user_text("do something"),
+            assistant_tool_use(),
+            user_tool_result("tool output"), // tool results sent, but next API call fails
+        ];
+        if conv.last().is_some_and(|m| matches!(m.role, Role::User)) {
+            conv.pop();
+        }
+        assert_eq!(conv.len(), 2);
+        assert!(matches!(conv.last().unwrap().role, Role::Assistant));
+    }
+
+    #[test]
+    fn api_error_recovery_noop_when_last_is_assistant() {
+        // If conversation ends with Assistant (normal state), the pop should not fire
+        let mut conv = vec![user_text("hello"), assistant_text("hi")];
+        if conv.last().is_some_and(|m| matches!(m.role, Role::User)) {
+            conv.pop();
+        }
+        assert_eq!(conv.len(), 2); // unchanged
+        assert!(matches!(conv.last().unwrap().role, Role::Assistant));
     }
 }

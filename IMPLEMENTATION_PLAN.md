@@ -2,9 +2,9 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~668 production lines across 3 source files with 63 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management with truncation safety valve prevents unbounded growth.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~680 production lines across 3 source files with 66 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 63 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 66 unit tests.
 
 File structure:
 - src/main.rs (~206 production lines)
@@ -74,6 +74,8 @@ Conversation trimming must handle single-exchange overflow. When a single exchan
 
 Range::find is cleaner than while loops for char boundary scanning. `(keep..text.len()).find(|&i| text.is_char_boundary(i))` replaces the manual `while !is_char_boundary { end += 1 }` loop.
 
+API errors must not corrupt conversation alternation. The Anthropic API requires strict User/Assistant alternation. The user message is pushed before `send_message`, so when the API call fails, the conversation ends with a trailing User message. The next user input would create consecutive User messages, which the API rejects with 400 — creating a permanent error loop. The fix: pop the trailing User message on API error. This handles both first-iteration failures (dangling user text) and mid-tool-loop failures (dangling tool results). The Go reference avoids this by terminating on any API error, but resilient sessions that survive transient failures are better UX.
+
 ## Future Work
 
 Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -133,4 +135,5 @@ The specification has been updated to reflect implementation decisions:
 [x] cargo fmt --check passes
 [x] cargo clippy -- -D warnings passes
 [x] cargo build --release passes
-[x] cargo test passes (63 unit tests)
+[x] API error recovery: pop trailing User message to maintain alternation invariant
+[x] cargo test passes (66 unit tests)
