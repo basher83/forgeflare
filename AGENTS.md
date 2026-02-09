@@ -37,38 +37,4 @@ src/
 
 ## Dependencies
 
-- reqwest 0.13
-- thiserror 2
-- futures-util 0.3
-- wait-timeout 0.2
-- serde, serde_json
-- tokio
-- clap
-
-## Code Patterns
-
-**Error Handling**
-- `AgentError` in api.rs via `thiserror`; tool errors are raw `Result<String, String>`
-- Tool errors returned as text in Anthropic API responses
-
-**Async**
-- `tokio` runtime with full features
-- Async for HTTP (reqwest) and command execution (tokio::process)
-- Main loop is synchronous; blocks on async operations
-
-**CLI**
-- `clap` with derive macros
-- Flags: `--verbose`, `--model` (default: claude-opus-4-6), `--max-tokens` (default: 16384)
-- Interactive REPL or read from stdin
-
-**HTTP Client**
-- Roll own with `reqwest` (connect timeout 30s, request timeout 300s)
-- POST to `https://api.anthropic.com/v1/messages`
-- SSE decoding for streaming responses
-- Parse `stop_reason` to detect tool_use vs end_turn
-- System prompt passed as parameter (dynamic cwd/platform injection)
-
-**JSON**
-- `serde` + `serde_json` with derive macros
-- Tool dispatch follows Anthropic tool_use specification
-- Context accumulates in conversation array
+reqwest 0.13, thiserror 2, futures-util 0.3, wait-timeout 0.2, serde/serde_json, tokio, clap

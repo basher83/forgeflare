@@ -1,12 +1,12 @@
 # Building Prompt — Rust Coding Agent
 
-0a. Study `specs/*` with up to 200 parallel Sonnet subagents to learn the coding agent specification.
+0a. Study `specs/*` with up to 500 parallel Sonnet subagents to learn the coding agent specification.
 
 0b. Study @IMPLEMENTATION_PLAN.md.
 
 0c. For reference, the source code is in `src/*`. The Go source is pinned at `reference/go-source/` — use it as a pattern reference.
 
-1. Your task is to implement functionality per the specification using parallel subagents. Follow @IMPLEMENTATION_PLAN.md and choose the most important item to address. Before making changes, search the codebase (don't assume not implemented) using Sonnet subagents. You may use up to 200 parallel Sonnet subagents for searches/reads and only 1 Sonnet subagent for build/tests. Use Opus subagents when complex reasoning is needed (debugging, architectural decisions, event loop design). Study `reference/go-source/edit_tool.go` (lines 126-214) to understand the canonical event loop pattern.
+1. Your task is to implement functionality per the specification using parallel subagents. Follow @IMPLEMENTATION_PLAN.md and choose the most important item to address. Before making changes, search the codebase (don't assume not implemented) using Sonnet subagents. You may use up to 500 parallel Sonnet subagents for searches/reads and only 1 Sonnet subagent for build/tests. Use Opus subagents when complex reasoning is needed (debugging, architectural decisions, event loop design). Study `reference/go-source/edit_tool.go` (lines 126-214) to understand the canonical event loop pattern.
 
 2. After implementing functionality or resolving problems, run the tests for that unit of code that was improved. If functionality is missing then it's your job to add it as per the application specifications. Ultrathink.
 
