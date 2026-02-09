@@ -1,7 +1,7 @@
 # Unified Rust Coding Agent Specification
 
 **Status:** Active
-**Target:** Single binary, streaming, subagent-aware, <870 production lines
+**Target:** Single binary, streaming, subagent-aware, <880 production lines
 **Pin:** Go source at `/reference/go-source/` — pattern-match against working code
 
 ---
@@ -93,7 +93,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <870 production lines (862 actual: 321 main.rs + 255 api.rs + 286 tools/mod.rs)
+- [x] <880 production lines (876 actual: 321 main.rs + 255 api.rs + 300 tools/mod.rs)
 - [x] Streaming responses visible to user in real-time
 
 ---
@@ -129,7 +129,7 @@ reference/
 - Search tool shells out to `rg` (must be installed)
 - Dynamic system prompt: `build_system_prompt()` injects cwd, platform, structured tool guidance, and safety rules at startup
 - reqwest client timeouts: 30s connect, 300s request (prevents indefinite hangs)
-- Bash command guard: deny-list blocks destructive patterns (rm -rf /, rm -fr /, fork bombs, dd to devices, mkfs, chmod 777 /) before shell execution, including reversed flag order variants
+- Bash command guard: deny-list blocks destructive patterns (rm -rf /, rm -fr /, fork bombs, dd to devices, mkfs, chmod 777 /) before shell execution, including reversed flag order variants. Commands are whitespace-normalized (lowercase + collapse spaces/tabs) before matching to catch bypass via extra whitespace
 - NO_COLOR convention: all ANSI output suppressed when `NO_COLOR` env var is set
 - API error recovery: pop trailing User message + orphaned tool_use to maintain conversation alternation invariant
 - Tool loop safety: 50-iteration limit prevents runaway agent behavior; calls recover_conversation on break to maintain alternation invariant

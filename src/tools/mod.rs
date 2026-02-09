@@ -126,17 +126,18 @@ fn walk(
         return Ok(());
     }
     for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+        let Ok(entry) = entry else { continue };
         let path = entry.path();
         let rel = path.strip_prefix(base).unwrap_or(&path).to_string_lossy();
-        if entry.file_type()?.is_dir() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
             let name = path.file_name().unwrap_or_default();
             if SKIP_DIRS.iter().any(|s| *s == name) {
                 continue;
             }
             files.push(format!("{rel}/"));
             if recursive {
-                walk(base, &path, files, recursive, depth + 1)?;
+                let _ = walk(base, &path, files, recursive, depth + 1);
             }
         } else {
             files.push(rel.into_owned());
@@ -156,8 +157,13 @@ fn truncate_with_marker(s: &mut String, max: usize) {
 
 fn bash_exec(input: Value) -> Result<String, String> {
     let command = input["command"].as_str().ok_or("command is required")?;
-    let lower = command.to_lowercase();
-    if let Some(pat) = BLOCKED_PATTERNS.iter().find(|p| lower.contains(*p)) {
+    // Normalize: lowercase + collapse whitespace (catches "rm  -rf  /", tabs, etc.)
+    let normalized: String = command
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(pat) = BLOCKED_PATTERNS.iter().find(|p| normalized.contains(*p)) {
         return Err(format!(
             "blocked: command matches dangerous pattern '{pat}'"
         ));
@@ -190,6 +196,8 @@ fn bash_exec(input: Value) -> Result<String, String> {
         None => {
             let _ = child.kill();
             let _ = child.wait();
+            drop(out_h.join()); // join drain threads to prevent resource leak
+            drop(err_h.join());
             return Err("Command timed out after 120s and was killed".into());
         }
     };
@@ -646,6 +654,21 @@ mod tests {
         let result = bash_exec(serde_json::json!({"command": "chmod 777 /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block chmod 777 /: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_whitespace_variations() {
+        // Double spaces and tabs between flags should be caught via normalization
+        let result = bash_exec(serde_json::json!({"command": "rm  -rf  /"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block rm  -rf  /: {err}");
+
+        let result = bash_exec(serde_json::json!({"command": "rm\t-rf\t/"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block rm<tab>-rf<tab>/: {err}"
+        );
     }
 
     #[test]
