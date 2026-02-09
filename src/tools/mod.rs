@@ -33,6 +33,8 @@ const BLOCKED_PATTERNS: &[&str] = &[
     "chmod -r 777 /",
     "chmod 777 /",
     ":(){ :|:& };:",
+    "git push --force",
+    "git push -f",
 ];
 
 macro_rules! tools {
@@ -711,6 +713,32 @@ mod tests {
             err.contains("blocked"),
             "should block redirect to /dev/hd: {err}"
         );
+    }
+
+    #[test]
+    fn bash_blocks_git_force_push() {
+        // git push --force can destroy shared repository history and is irreversible
+        let result = bash_exec(serde_json::json!({"command": "git push --force origin main"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block git push --force: {err}"
+        );
+    }
+
+    #[test]
+    fn bash_blocks_git_force_push_short_flag() {
+        // git push -f is equivalent to git push --force
+        let result = bash_exec(serde_json::json!({"command": "git push -f origin main"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block git push -f: {err}");
+    }
+
+    #[test]
+    fn bash_allows_normal_git_push() {
+        // Normal git push (without --force/-f) must NOT be blocked
+        let result = bash_exec(serde_json::json!({"command": "echo 'git push origin main'"}));
+        assert!(result.is_ok(), "normal git push should not be blocked");
     }
 
     #[test]
