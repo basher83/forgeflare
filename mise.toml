@@ -8,6 +8,7 @@ RUST_BACKTRACE = "1"
 [tools]
 rust = { version = "stable", components = "rustfmt,clippy" }
 "cargo:cargo-audit" = "latest"
+ripgrep = "latest"
 
 # ── Format ────────────────────────────────────────────────
 [tasks.fmt]

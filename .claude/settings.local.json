@@ -13,7 +13,13 @@
       "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nstyle: align table column separator in specs README\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git -C /workspaces/forgeflare add:*)",
       "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\ndocs: add CLAUDE.md symlink to AGENTS.md\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nchore: update local Claude permission allowlist\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nchore: update local Claude permission allowlist\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nbuild: add mise.toml with Rust tooling and task definitions\n\nConfigures mise for task orchestration: fmt, lint, test, build,\naudit, and composite check/ci tasks. Pins rust stable with\nrustfmt and clippy components.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nci: add GitHub Actions workflow for lint, audit, test, build\n\nFour parallel jobs using mise for task orchestration.\nPinned action SHAs, rust-cache on compile jobs, least-privilege\npermissions. Triggers on push to main, version tags, and PRs.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /workspaces/forgeflare log --oneline -5)",
+      "Bash(gh run list:*)",
+      "Bash(gh run watch:*)",
+      "Bash(echo:*)"
     ]
   },
   "hooks": {
