@@ -56,7 +56,7 @@ tools! {
     "bash", "Execute a bash command. 120s timeout, 100KB output cap. Non-zero exit = error. Each call is a fresh shell — use cwd param or absolute paths.",
     serde_json::json!({"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "cwd": {"type": "string", "description": "Optional working directory"}}, "required": ["command"]}),
     bash_exec;
-    "edit_file", "Make edits to a text file. Replaces 'old_str' with 'new_str' in the given file. 'old_str' and 'new_str' MUST be different from each other. If the file doesn't exist and old_str is empty, it will be created.",
+    "edit_file", "Make edits to a text file (1MB limit). Replaces 'old_str' with 'new_str' in the given file. 'old_str' and 'new_str' MUST be different from each other. If the file doesn't exist and old_str is empty, it will be created.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for (must match exactly once). Empty string = create/append mode"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}}, "required": ["path", "old_str", "new_str"]}),
     edit_exec;
     "code_search", "Search code via ripgrep (rg). Regex patterns, case-insensitive by default. 50 match limit. Prefer over bash grep/find.",
