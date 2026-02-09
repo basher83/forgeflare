@@ -272,7 +272,7 @@ fn search_exec(input: Value) -> Result<String, String> {
     if let Some(ft) = input["file_type"].as_str() {
         args.extend(["--type", ft]);
     }
-    args.extend([pattern, path]);
+    args.extend(["--", pattern, path]);
     let rg_err = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::NotFound => {
             "rg (ripgrep) not found — install it: https://github.com/BurntSushi/ripgrep".into()
@@ -1003,6 +1003,24 @@ mod tests {
         );
         assert!(result.is_ok());
         assert!(result.unwrap().contains("fn all_tool_schemas"));
+    }
+
+    #[test]
+    fn search_dash_pattern_not_treated_as_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("flags.txt"),
+            "--help is useful\n-v verbose\n",
+        )
+        .unwrap();
+        let result = search_exec(
+            serde_json::json!({"pattern": "--help", "path": dir.path().to_str().unwrap()}),
+        );
+        let output = result.unwrap();
+        assert!(
+            output.contains("--help is useful"),
+            "should find --help as literal pattern, not invoke rg help: {output}"
+        );
     }
 
     #[test]

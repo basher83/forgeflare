@@ -2,7 +2,7 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 123 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 124 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
@@ -10,7 +10,7 @@ Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bomb
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 123 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 124 unit tests.
 
 File structure:
 - src/main.rs (~321 production lines)
@@ -172,6 +172,8 @@ Bash command guard must block `git push --force` and `git push -f`. The system p
 
 `edit_file` must detect binary files before attempting string operations. Without binary detection, `fs::read_to_string` on a binary file produces a cryptic UTF-8 error instead of a clear "binary file" message. The fix: extract a shared `read_text_file` helper that both `read_exec` and `edit_exec` call. The helper performs the metadata size check, raw read, null-byte binary detection (first 8KB), and UTF-8 conversion. This eliminates duplication (DRY) between the two functions while adding binary safety to edits. Line-count neutral thanks to the shared extraction.
 
+`search_exec` must use `--` separator before pattern argument. Without it, patterns starting with `-` (like `--help`, `-v`, `-e`) are interpreted as rg flags instead of search patterns. `--help` as a pattern caused rg to print its help text and exit 0, returning rg's manual as "search results". `-e` caused rg to treat the next argument (the path) as the pattern and wait on stdin. The `--` separator is standard POSIX convention for ending option processing.
+
 `read_file` schema description said "Relative file path" but the tool accepts any path. Schema descriptions are the model's primary source for parameter semantics — an inaccurate description causes the model to avoid absolute paths or add unnecessary relative path construction. Changed to "File path to read".
 
 `code_search` error on missing `rg` was a cryptic OS error ("No such file or directory"). Adding an `ErrorKind::NotFound` check surfaces an actionable message ("rg (ripgrep) not found — install it: ...") that tells users exactly what to do. The `rg_err` closure avoids rustfmt line expansion by extracting the match into a named closure before the method chain.
@@ -213,7 +215,7 @@ The specification has been updated to reflect implementation decisions:
 - list_files schema description updated to include `.devenv` to match SKIP_DIRS constant.
 - Bash command guard expanded: `git push --force` and `git push -f` blocked, closing the gap between system prompt safety promises and code enforcement.
 - `edit_file` now detects binary files via shared `read_text_file` helper (null-byte check in first 8KB). DRY extraction eliminates duplication with `read_exec`. 1 new test (123 total).
-- R4 updated: edit_file spec now documents create/append modes (empty old_str). read_file schema corrected. code_search error message improved for missing rg.
+- R4 updated: edit_file spec now documents create/append modes (empty old_str). read_file schema corrected. code_search error message improved for missing rg. code_search uses `--` separator before pattern to prevent dash-prefixed patterns from being interpreted as rg flags.
 
 ## Verification Checklist
 
@@ -260,6 +262,7 @@ The specification has been updated to reflect implementation decisions:
 [x] send_message accepts system_prompt and max_tokens parameters
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
 [x] search_exec: 50-line cap applied before 100KB byte cap
+[x] search_exec: `--` separator prevents dash-prefixed patterns from being treated as rg flags
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs, unchanged after read_text_file extraction)
+[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs)
