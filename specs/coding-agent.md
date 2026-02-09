@@ -36,7 +36,7 @@ tools! {
 1. **Read** — read_file(path) → file contents (handle binary, size limits)
 2. **List** — list_files(path, recursive?) → [files]
 3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout)
-4. **Edit** — edit_file(path, old_str, new_str) → success/error (exact match semantics)
+4. **Edit** — edit_file(path, old_str, new_str) → success/error (exact match semantics; empty old_str on missing file = create with mkdir, empty old_str on existing file = append)
 5. **Search** — code_search(pattern, path?, file_type?, case_sensitive?) → matches (shell out to `rg`)
 
 **R5. CLI Interface**
@@ -136,6 +136,7 @@ reference/
 - Tool result visibility: non-verbose mode shows result size (chars); errors always shown with 200-char preview (matches Go reference pattern of always showing tool results)
 - Tool schema descriptions enriched with limits (1MB, 100KB, 1000 entries, 50 matches, 120s timeout) so the model sees constraints in both schema and system prompt
 - Retry-After header surfaced on 429 rate limit responses for better user-facing diagnostics
+- code_search surfaces actionable error when rg (ripgrep) is not installed instead of cryptic "No such file" OS error
 
 ---
 

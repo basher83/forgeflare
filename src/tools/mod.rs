@@ -7,7 +7,6 @@ const BASH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_READ_SIZE: u64 = 1024 * 1024; // 1MB
 const MAX_BASH_OUTPUT: usize = 100 * 1024; // 100KB
 
-/// Destructive bash patterns blocked before execution (combined, separate, and long-form flags).
 const BLOCKED_PATTERNS: &[&str] = &[
     "rm -rf /",
     "rm -rf ~",
@@ -54,7 +53,7 @@ macro_rules! tools {
 
 tools! {
     "read_file", "Read file contents with line numbers. 1MB size limit. Detects binary files. Use before editing — never edit without reading first.",
-    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Relative file path"}}, "required": ["path"]}),
+    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "File path to read"}}, "required": ["path"]}),
     read_exec;
     "list_files", "List files and directories. Defaults to current directory, non-recursive. Skips .git, .devenv, node_modules, target, .venv, vendor. 1000 entry cap.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []}),
@@ -163,7 +162,6 @@ fn truncate_with_marker(s: &mut String, max: usize) {
 
 fn bash_exec(input: Value) -> Result<String, String> {
     let command = input["command"].as_str().ok_or("command is required")?;
-    // Normalize: lowercase + collapse whitespace (catches "rm  -rf  /", tabs, etc.)
     let normalized: String = command
         .to_lowercase()
         .split_whitespace()
@@ -204,7 +202,6 @@ fn bash_exec(input: Value) -> Result<String, String> {
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            // Join drain threads to prevent resource leak; panics are secondary to timeout
             let _ = out_h.join();
             let _ = err_h.join();
             return Err("Command timed out after 120s and was killed".into());
@@ -276,10 +273,13 @@ fn search_exec(input: Value) -> Result<String, String> {
         args.extend(["--type", ft]);
     }
     args.extend([pattern, path]);
-    let output = Command::new("rg")
-        .args(&args)
-        .output()
-        .map_err(|e| format!("rg failed: {e}"))?;
+    let rg_err = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            "rg (ripgrep) not found — install it: https://github.com/BurntSushi/ripgrep".into()
+        }
+        _ => format!("rg failed: {e}"),
+    };
+    let output = Command::new("rg").args(&args).output().map_err(rg_err)?;
     if output.status.code() == Some(1) {
         return Ok("No matches found".into());
     }

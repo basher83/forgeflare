@@ -172,6 +172,10 @@ Bash command guard must block `git push --force` and `git push -f`. The system p
 
 `edit_file` must detect binary files before attempting string operations. Without binary detection, `fs::read_to_string` on a binary file produces a cryptic UTF-8 error instead of a clear "binary file" message. The fix: extract a shared `read_text_file` helper that both `read_exec` and `edit_exec` call. The helper performs the metadata size check, raw read, null-byte binary detection (first 8KB), and UTF-8 conversion. This eliminates duplication (DRY) between the two functions while adding binary safety to edits. Line-count neutral thanks to the shared extraction.
 
+`read_file` schema description said "Relative file path" but the tool accepts any path. Schema descriptions are the model's primary source for parameter semantics — an inaccurate description causes the model to avoid absolute paths or add unnecessary relative path construction. Changed to "File path to read".
+
+`code_search` error on missing `rg` was a cryptic OS error ("No such file or directory"). Adding an `ErrorKind::NotFound` check surfaces an actionable message ("rg (ripgrep) not found — install it: ...") that tells users exactly what to do. The `rg_err` closure avoids rustfmt line expansion by extracting the match into a named closure before the method chain.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -196,7 +200,7 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from static string to dynamic `build_system_prompt()` with cwd, platform injection and structured tool/safety guidance.
 - `send_message` signature extended with `system_prompt: &str` parameter.
 - specs/README.md line count corrected (<870 → <880) to match coding-agent.md.
-- Production line counting: main.rs 321 + api.rs 254 + tools/mod.rs 302 = 877 total.
+- Production line counting: main.rs 321 + api.rs 254 + tools/mod.rs 304 = 879 total.
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Bash drain threads bounded via Read::take() to prevent OOM on large command output.
 - truncate_with_marker uses str::floor_char_boundary (Rust 1.82+) instead of manual reverse scan.
@@ -209,6 +213,7 @@ The specification has been updated to reflect implementation decisions:
 - list_files schema description updated to include `.devenv` to match SKIP_DIRS constant.
 - Bash command guard expanded: `git push --force` and `git push -f` blocked, closing the gap between system prompt safety promises and code enforcement.
 - `edit_file` now detects binary files via shared `read_text_file` helper (null-byte check in first 8KB). DRY extraction eliminates duplication with `read_exec`. 1 new test (123 total).
+- R4 updated: edit_file spec now documents create/append modes (empty old_str). read_file schema corrected. code_search error message improved for missing rg.
 
 ## Verification Checklist
 
@@ -225,9 +230,10 @@ The specification has been updated to reflect implementation decisions:
 [x] System prompt: structured workflow instructions, tool guidance, safety rules
 [x] StopReason enum: EndTurn, ToolUse, MaxTokens
 [x] Non-interactive mode: suppresses prompts when stdin is piped
-[x] read_file: 1MB size limit, binary detection via null byte check
+[x] read_file: 1MB size limit, binary detection via null byte check, schema description corrected from "Relative file path" to "File path to read"
 [x] list_files: recursive parameter, SKIP_DIRS filter, 1000 entry cap, sorted output
 [x] edit_file: 1MB size limit, binary detection via shared read_text_file helper, schema documents create/append mode for empty old_str
+[x] code_search: surfaces actionable error when rg is not installed
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
 [x] cargo fmt/clippy/build/test passes (123 unit tests)
