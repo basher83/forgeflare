@@ -43,7 +43,9 @@ tools! {
 - Single binary, no subcommands required
 - `--verbose` flag for debug output
 - `--model` flag (default: claude-opus-4-6)
+- `--max-tokens` flag (default: 16384, API supports up to 128K)
 - Read prompts/context from stdin if available, interactive prompt otherwise
+- Piped stdin read as single prompt (not line-by-line)
 - Exit gracefully on EOF or "exit" command
 
 **R6. Error Handling**
@@ -91,7 +93,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <850 production lines (808 actual: 300 main.rs + 247 api.rs + 261 tools/mod.rs)
+- [x] <850 production lines (846 actual: 317 main.rs + 248 api.rs + 281 tools/mod.rs)
 - [x] Streaming responses visible to user in real-time
 
 ---
@@ -122,9 +124,15 @@ reference/
 
 - Use exact match for `edit_file` (one old_str appearance exactly, new_str differs)
 - Tool dispatch is synchronous; async only for HTTP and command execution
-- Context accumulates in memory; no persistence layer
+- Context accumulates in memory; no persistence layer. Conversation trimmed at exchange boundaries (720KB budget, ~180K tokens) to prevent unbounded growth while preserving tool_use/tool_result pairing
 - No automatic retry; failures return to user for decision
 - Search tool shells out to `rg` (must be installed)
+- Dynamic system prompt: `build_system_prompt()` injects cwd, platform, structured tool guidance, and safety rules at startup
+- reqwest client timeouts: 30s connect, 300s request (prevents indefinite hangs)
+- Bash command guard: deny-list blocks destructive patterns (rm -rf /, fork bombs, dd to devices, mkfs, chmod 777 /) before shell execution
+- NO_COLOR convention: all ANSI output suppressed when `NO_COLOR` env var is set
+- API error recovery: pop trailing User message + orphaned tool_use to maintain conversation alternation invariant
+- Tool loop safety: 50-iteration limit prevents runaway agent behavior
 
 ---
 

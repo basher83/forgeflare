@@ -578,6 +578,20 @@ mod tests {
     }
 
     #[test]
+    fn bash_blocks_chmod_777_root() {
+        let result = bash_exec(serde_json::json!({"command": "chmod -R 777 /"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block chmod 777 /: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_mkfs() {
+        let result = bash_exec(serde_json::json!({"command": "mkfs.ext4 /dev/sda1"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block mkfs: {err}");
+    }
+
+    #[test]
     fn bash_allows_safe_commands() {
         // Ensure the guard doesn't block normal commands
         let result = bash_exec(serde_json::json!({"command": "echo hello"}));
@@ -713,6 +727,21 @@ mod tests {
     }
 
     #[test]
+    fn edit_delete_text() {
+        // Replacing with empty new_str effectively deletes the matched text
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "keep DELETE_ME keep").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": " DELETE_ME",
+            "new_str": ""
+        }));
+        assert_eq!(result.unwrap(), "OK");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep keep");
+    }
+
+    #[test]
     fn edit_empty_old_and_new_rejected() {
         // When both old_str and new_str are empty, the no-op check rejects it.
         let dir = tempfile::tempdir().unwrap();
@@ -824,6 +853,18 @@ mod tests {
         );
         assert!(result.is_ok());
         assert!(result.unwrap().contains("fn all_tool_schemas"));
+    }
+
+    #[test]
+    fn search_invalid_regex() {
+        // rg returns exit code 2 for invalid regex; should surface as error
+        let result = search_exec(serde_json::json!({"pattern": "[invalid(regex"}));
+        assert!(result.is_err(), "invalid regex should error");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("search failed"),
+            "should contain error context: {err}"
+        );
     }
 
     #[test]

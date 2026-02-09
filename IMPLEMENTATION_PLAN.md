@@ -2,9 +2,9 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~846 production lines across 3 source files with 102 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model`, `--max-tokens` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging. bash command guard deny-list blocks dangerous patterns (rm -rf /, fork bombs, dd to block devices) before execution. Tool error display in non-verbose mode shows is_error results with 200-char truncation.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~846 production lines across 3 source files with 106 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model`, `--max-tokens` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging. bash command guard deny-list blocks dangerous patterns (rm -rf /, fork bombs, dd to block devices) before execution. Tool error display in non-verbose mode shows is_error results with 200-char truncation.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 102 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 106 unit tests.
 
 File structure:
 - src/main.rs (~317 production lines)
@@ -154,6 +154,8 @@ Tool error display in non-verbose mode improves UX without flooding output. The 
 
 --max-tokens as a CLI parameter (default 16384) removes the hardcoded constant from api.rs. The parameter flows from Cli struct through main to send_message. This follows the existing pattern for --model and allows power users to increase the budget for long responses (API supports up to 128K) or decrease it for faster, cheaper calls.
 
+Test coverage audit revealed untested blocked patterns (chmod 777 /, mkfs), edit_file text deletion, and invalid regex handling for code_search. These edge cases are straightforward but worth testing because they exercise different code paths in the command guard and error handling.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -170,7 +172,7 @@ The specification has been updated to reflect implementation decisions:
 
 - R3 updated: enum example replaced with tools! macro pattern that matches implementation.
 - R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false), output capped at 1000 entries. bash_exec truncates output at 100KB (byte-size cap, enforced in addition to 50-line limit for search operations). Directory filter works at any depth using file_name comparison. R4 now uses `code_search` tool name (spec previously showed `search`). bash_exec now validates commands against a deny-list of destructive patterns before execution. Blocked commands return is_error: true without spawning a shell.
-- R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode. Piped stdin reads all input as a single prompt. --max-tokens CLI flag added (default 16384). send_message signature extended with max_tokens: u32 parameter.
+- R5 updated: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode. Piped stdin reads all input as a single prompt. --max-tokens CLI flag added (default 16384), piped stdin single-prompt behavior documented. send_message signature extended with max_tokens: u32 parameter.
 - R6 clarified: only api.rs uses thiserror for error types. Tools return raw string errors in tool_result blocks with is_error: true.
 - R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`. Partial tool_use blocks filtered on truncation.
 - R8 updated: SubagentContext removed as dead code per engineering philosophy (was initially implemented but never used).
@@ -185,6 +187,8 @@ The specification has been updated to reflect implementation decisions:
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
 - SSE parser now has 17 unit tests covering the full event processing state machine.
 - Tool dispatch now handles corrupt tool_use blocks with null input by sending error tool_results (maintains API pairing invariant).
+- Success criteria: stale line count corrected (808 → 846).
+- Implementation Notes: expanded with conversation trimming, dynamic system prompt, NO_COLOR, reqwest timeouts, bash command guard, API error recovery, tool loop iteration limit.
 
 ## Verification Checklist
 
@@ -237,6 +241,10 @@ The specification has been updated to reflect implementation decisions:
 [x] bash stdout/stderr labeled separator ('--- stderr ---') for model disambiguation
 [x] SSE content_block_stop OOB index warning logged for debugging
 [x] Bash command guard: deny-list blocks rm -rf, fork bombs, dd-to-device, mkfs, chmod 777 / (4 new tests)
+[x] Bash command guard: chmod -R 777 / blocked (case-insensitive match)
+[x] Bash command guard: mkfs.* blocked
+[x] edit_file: text deletion (non-empty old_str, empty new_str) works correctly
+[x] code_search: invalid regex returns descriptive error via rg exit code 2
 [x] Tool errors displayed in non-verbose mode (is_error results shown with 200-char truncation)
 [x] --max-tokens CLI flag (default 16384, flows through to API)
 [x] specs/README.md line count corrected (<700 → <850)
@@ -248,4 +256,4 @@ The specification has been updated to reflect implementation decisions:
 [x] list_files output capped at 1000 entries
 [x] search_exec output capped at 100KB (byte-size) in addition to 50-line cap
 [x] bash stdout/stderr separated by newline when both are non-empty
-[x] cargo test passes (102 unit tests)
+[x] cargo test passes (106 unit tests)
