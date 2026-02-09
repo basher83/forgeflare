@@ -153,7 +153,13 @@ fn bash_exec(input: Value) -> Result<String, String> {
     };
     let stdout = out_h.join().unwrap_or_default();
     let stderr = err_h.join().unwrap_or_default();
-    let mut output = format!("{stdout}{stderr}").trim().to_string();
+    let mut output = if !stdout.is_empty() && !stderr.is_empty() {
+        format!("{stdout}\n{stderr}")
+    } else {
+        format!("{stdout}{stderr}")
+    }
+    .trim()
+    .to_string();
     if !status.success() {
         let mut msg = format!("Command failed ({status}): {output}");
         if msg.len() > MAX_BASH_OUTPUT {
@@ -481,6 +487,21 @@ mod tests {
     }
 
     #[test]
+    fn bash_stdout_stderr_separated() {
+        // When both stdout and stderr have content, they should be separated by a newline
+        let result = bash_exec(serde_json::json!({"command": "echo out; echo err >&2"}));
+        let output = result.unwrap();
+        assert!(output.contains("out"), "should contain stdout");
+        assert!(output.contains("err"), "should contain stderr");
+        // The two should not be concatenated on the same line
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "stdout and stderr should be on separate lines: {output}"
+        );
+    }
+
+    #[test]
     fn bash_output_truncated() {
         // Generate output larger than MAX_BASH_OUTPUT (100KB) using printf
         let result = bash_exec(
@@ -606,6 +627,46 @@ mod tests {
             edit_exec(serde_json::json!({"path": "/tmp/x", "old_str": "a"})).unwrap_err(),
             "new_str is required"
         );
+    }
+
+    #[test]
+    fn edit_empty_old_and_new_rejected() {
+        // When both old_str and new_str are empty, the no-op check rejects it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "content").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "",
+            "new_str": ""
+        }));
+        assert_eq!(result.unwrap_err(), "old_str and new_str must differ");
+    }
+
+    #[test]
+    fn bash_error_output_truncated() {
+        // Error path should also truncate oversized output
+        let result = bash_exec(
+            serde_json::json!({"command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'; exit 1"}),
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("truncated at 100KB"),
+            "error output should be truncated: {err}"
+        );
+        assert!(err.len() <= 110 * 1024); // 100KB + prefix + truncation message
+    }
+
+    #[test]
+    fn list_files_output_is_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create files in reverse alphabetical order
+        for name in &["zebra.txt", "apple.txt", "mango.txt"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        let result = list_exec(serde_json::json!({"path": dir.path().to_str().unwrap()}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(files, vec!["apple.txt", "mango.txt", "zebra.txt"]);
     }
 
     #[test]

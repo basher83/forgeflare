@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~779 production lines across 3 source files with 88 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~785 production lines across 3 source files with 93 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by newline when both are non-empty.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 88 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 93 unit tests.
 
 File structure:
 - src/main.rs (~300 production lines)
 - src/api.rs (~236 production lines)
-- src/tools/mod.rs (~243 production lines)
-- Total: ~779 production lines
+- src/tools/mod.rs (~249 production lines)
+- Total: ~785 production lines
 
 ## Architectural Decisions
 
@@ -80,7 +80,7 @@ API errors must not corrupt conversation alternation. The Anthropic API requires
 
 rustfmt actively expands compressed single-line patterns. Single-line `if x { continue; }` blocks, single-line struct bodies, and compressed multi-condition guards all get expanded by `cargo fmt`. The only reliable way to reduce line count is through structural changes (combining match arms, extracting helpers for duplicated patterns, using combinators instead of match expressions) — not cosmetic compression that rustfmt will undo.
 
-SseParser extraction enables testability without HTTP mocks. By pulling the SSE event processing out of `send_message` into a struct with `process_line()` and `finish()` methods, the parser state machine becomes directly testable. This added ~15 net production lines but enabled 13 new SSE tests covering text responses, tool use, mixed blocks, unknown block types, missing indices, out-of-bounds indices, stream errors, incomplete streams, message_stop fallback, max_tokens, corrupt JSON, empty lines, and non-SSE lines.
+SseParser extraction enables testability without HTTP mocks. By pulling the SSE event processing out of `send_message` into a struct with `process_line()` and `finish()` methods, the parser state machine becomes directly testable. This added ~15 net production lines but enabled 14 new SSE tests covering text responses, tool use, mixed blocks, unknown block types, missing indices, out-of-bounds indices, stream errors, incomplete streams, message_stop fallback, max_tokens, corrupt JSON, empty lines, trailing data without newline, and non-SSE lines.
 
 `list_files` output must be sorted for deterministic results. `fs::read_dir` returns entries in arbitrary filesystem order, unlike Go's `filepath.Walk` which returns lexical order. Adding `files.sort()` ensures consistent output across runs and platforms.
 
@@ -133,6 +133,8 @@ reqwest .json() automatically sets Content-Type: application/json — the explic
 flat_map on nested iteration. `conversation.iter_mut().flat_map(|m| &mut m.content)` eliminates the inner `for block in &mut msg.content` loop and its closing brace.
 
 match expression for empty/exit input checks. `match t.as_str() { "" => continue, "exit" => break, _ => t }` is more compact than sequential if-else and rustfmt keeps single-expression match arms on one line.
+
+bash stdout/stderr concatenation needs a separator. `format!("{stdout}{stderr}")` merges the last line of stdout with the first line of stderr when both produce output. The Go reference has the same bug. A conditional newline separator (`if !stdout.is_empty() && !stderr.is_empty()`) prevents invisible boundaries between streams while preserving compact output when only one stream is active.
 
 ## Future Work
 
@@ -208,11 +210,12 @@ The specification has been updated to reflect implementation decisions:
 [x] NO_COLOR convention respected: all ANSI output suppressed when NO_COLOR env var is set
 [x] Corrupt tool_use blocks (null input) produce error tool_results in dispatch loop
 [x] edit_file enforces 1MB size limit (matches read_file)
-[x] ~779 production lines (300 main.rs + 236 api.rs + 243 tools/mod.rs)
+[x] ~785 production lines (300 main.rs + 236 api.rs + 249 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt parameter (runtime context injection)
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
 [x] response.clone() eliminated — response moved into conversation, iterated via last()
 [x] list_files output capped at 1000 entries
 [x] search_exec output capped at 100KB (byte-size) in addition to 50-line cap
-[x] cargo test passes (88 unit tests)
+[x] bash stdout/stderr separated by newline when both are non-empty
+[x] cargo test passes (93 unit tests)

@@ -597,6 +597,27 @@ mod tests {
     }
 
     #[test]
+    fn trim_all_tool_result_exchanges_falls_through() {
+        // When every User message starts with ToolResult (no text boundaries after index 0),
+        // trim_conversation should fall through to truncate_oversized_blocks since there
+        // are no safe exchange boundaries to cut at (except the very first message).
+        let mut conv = vec![
+            user_text("initial question"),
+            assistant_tool_use(),
+            user_tool_result("result 1"),
+            assistant_tool_use(),
+            user_tool_result("result 2"),
+            assistant_text("done"),
+        ];
+        // Set budget too small to hold everything
+        let budget = conversation_bytes(&conv[..2]); // only fits first exchange
+        trim_conversation(&mut conv, budget);
+        // The only boundary is at index 0; keep_last = 0 → falls through to truncation
+        // Conversation should be preserved (single boundary can't trim)
+        assert!(!conv.is_empty());
+    }
+
+    #[test]
     fn system_prompt_contains_environment_info() {
         let prompt = build_system_prompt();
         assert!(prompt.contains(std::env::consts::OS), "should contain OS");
