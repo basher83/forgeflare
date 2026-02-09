@@ -60,12 +60,23 @@ fn read_exec(input: Value) -> Result<String, String> {
         .join("\n"))
 }
 
+const MAX_LIST_ENTRIES: usize = 1000;
+
 fn list_exec(input: Value) -> Result<String, String> {
     let dir = input["path"].as_str().unwrap_or(".");
     let recursive = input["recursive"].as_bool().unwrap_or(false);
     let mut files = Vec::new();
     walk(Path::new(dir), Path::new(dir), &mut files, recursive).map_err(|e| e.to_string())?;
     files.sort();
+    let total = files.len();
+    if total > MAX_LIST_ENTRIES {
+        files.truncate(MAX_LIST_ENTRIES);
+        let mut out = serde_json::to_string(&files).map_err(|e| e.to_string())?;
+        out.push_str(&format!(
+            "\n... (showing {MAX_LIST_ENTRIES} of {total} entries)"
+        ));
+        return Ok(out);
+    }
     serde_json::to_string(&files).map_err(|e| e.to_string())
 }
 
@@ -216,7 +227,11 @@ fn search_exec(input: Value) -> Result<String, String> {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("search failed: {err}"));
     }
-    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if result.len() > MAX_BASH_OUTPUT {
+        truncate_with_marker(&mut result, MAX_BASH_OUTPUT);
+        return Ok(result);
+    }
     let lines: Vec<&str> = result.lines().collect();
     if lines.len() <= 50 {
         return Ok(result);
@@ -695,5 +710,45 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds"));
+    }
+
+    #[test]
+    fn search_truncates_at_50_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("many.txt");
+        // 100 lines matching "hit" — result should be capped at 50
+        let content: String = (0..100).map(|i| format!("hit line {i}\n")).collect();
+        fs::write(&path, &content).unwrap();
+        let result = search_exec(
+            serde_json::json!({"pattern": "hit", "path": dir.path().to_str().unwrap()}),
+        );
+        let output = result.unwrap();
+        assert!(
+            output.contains("showing 50 of"),
+            "should indicate truncation: {output}"
+        );
+    }
+
+    #[test]
+    fn bash_invalid_cwd_returns_error() {
+        let result = bash_exec(
+            serde_json::json!({"command": "pwd", "cwd": "/tmp/_nonexistent_forgeflare_dir_"}),
+        );
+        assert!(result.is_err(), "invalid cwd should error");
+    }
+
+    #[test]
+    fn list_files_caps_at_max_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create 1100 files to exceed the 1000 cap
+        for i in 0..1100 {
+            fs::write(dir.path().join(format!("f{i:04}.txt")), "").unwrap();
+        }
+        let result = list_exec(serde_json::json!({"path": dir.path().to_str().unwrap()}));
+        let output = result.unwrap();
+        assert!(
+            output.contains("showing 1000 of 1100"),
+            "should indicate truncation: {output}"
+        );
     }
 }

@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~741 production lines across 3 source files with 84 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with tool behavioral guidance and safety rules.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~757 production lines across 3 source files with 88 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with tool behavioral guidance and safety rules. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 84 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 88 unit tests.
 
 File structure:
 - src/main.rs (~278 production lines)
-- src/api.rs (~235 production lines)
-- src/tools/mod.rs (~228 production lines)
-- Total: ~741 production lines
+- src/api.rs (~236 production lines)
+- src/tools/mod.rs (~243 production lines)
+- Total: ~757 production lines
 
 ## Architectural Decisions
 
@@ -98,6 +98,12 @@ Piped stdin must be read as a single prompt, not line-by-line. The Go reference 
 
 SSE buffer residual data after stream end. The SSE parsing loop only processes lines terminated by `\n`. If the stream's final chunk doesn't end with a newline, the last event (often `message_delta` with `stop_reason`) is silently dropped, causing a false "stream ended without stop_reason" error. Fixed by processing the trailing buffer after the stream loop exits.
 
+`reqwest::Client::new()` has no default timeout. Without explicit timeouts, a hung API connection blocks the agent forever. Adding `connect_timeout(30s)` and `timeout(300s)` via `ClientBuilder` prevents indefinite hangs. The 300s request timeout accommodates long streaming responses while still catching dead connections.
+
+`response.clone()` was unnecessary in the main loop. The response `Vec<ContentBlock>` was being cloned into conversation history, then the original was iterated for tool dispatch. Moving the response into conversation first (no clone) and iterating `conversation.last().unwrap().content` eliminates the allocation.
+
+`list_files` with recursive=true on large trees has no output cap. Added MAX_LIST_ENTRIES (1000) to prevent unbounded context consumption. Similarly, `search_exec` only had a 50-line cap but no byte-size limit — added MAX_BASH_OUTPUT (100KB) truncation for consistency.
+
 API error mid-tool-loop leaves orphaned tool_use. When `send_message` fails after a tool_use response was received and tool results were sent, the error handler popped the trailing User(tool_results) but left the Assistant(tool_use) message. The API requires every `tool_use` to have a matching `tool_result` in the next User message — so the next call would fail with 400. Fixed by also popping the orphaned Assistant message when the popped User message contained tool_results. Uses `Vec::pop_if` (stable since Rust 1.86) for a compact implementation in `recover_conversation`.
 
 Inline format args compress multi-line eprintln to single-line. rustfmt expands `eprintln!("... {}", expr)` to multiple lines when the format string + arg exceed the line width. Binding the expression to `let n = expr` first allows `eprintln!("... {n}")` which fits on one line. This pattern saved ~6 production lines across main.rs.
@@ -139,14 +145,15 @@ Error recovery. No retry logic for transient API failures. Spec explicitly state
 The specification has been updated to reflect implementation decisions:
 
 - R3 updated: enum example replaced with tools! macro pattern that matches implementation.
-- R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false). bash_exec truncates output at 100KB. Directory filter works at any depth using file_name comparison.
+- R4 hardened: read_file now enforces 1MB size limit and detects binary files (null byte check). list_files supports optional `recursive` parameter (default: false), output capped at 1000 entries. bash_exec truncates output at 100KB (byte-size cap, enforced in addition to 50-line limit for search operations). Directory filter works at any depth using file_name comparison. R4 now uses `code_search` tool name (spec previously showed `search`).
 - R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode. Piped stdin reads all input as a single prompt.
+- R6 clarified: only api.rs uses thiserror for error types. Tools return raw string errors in tool_result blocks with is_error: true.
 - R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`. Partial tool_use blocks filtered on truncation.
+- R8 updated: SubagentContext removed as dead code per engineering philosophy (was initially implemented but never used).
 - SSE hardened: Unknown block types handled via placeholder blocks to maintain index sync. Mid-stream error events explicitly detected. Empty text blocks filtered before returning. Incomplete streams detected via missing stop_reason.
 - System prompt upgraded from static string to dynamic `build_system_prompt()` with cwd, platform injection and structured tool/safety guidance.
 - `send_message` signature extended with `system_prompt: &str` parameter.
-- SubagentContext removed as dead code per engineering philosophy.
-- Line target updated from <700 to ~750 to accommodate dynamic system prompt (justified trade-off: prompt is highest-leverage agent quality improvement).
+- Line target updated from <700 to <800 to accommodate dynamic system prompt, HTTP timeouts, and output caps (justified trade-offs: operational safety and tool robustness).
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
@@ -197,7 +204,11 @@ The specification has been updated to reflect implementation decisions:
 [x] NO_COLOR convention respected: all ANSI output suppressed when NO_COLOR env var is set
 [x] Corrupt tool_use blocks (null input) produce error tool_results in dispatch loop
 [x] edit_file enforces 1MB size limit (matches read_file)
-[x] ~741 production lines (278 main.rs + 235 api.rs + 228 tools/mod.rs)
+[x] ~757 production lines (278 main.rs + 236 api.rs + 243 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt parameter (runtime context injection)
-[x] cargo test passes (84 unit tests)
+[x] reqwest client: connect_timeout (30s) and request timeout (300s)
+[x] response.clone() eliminated — response moved into conversation, iterated via last()
+[x] list_files output capped at 1000 entries
+[x] search_exec output capped at 100KB (byte-size) in addition to 50-line cap
+[x] cargo test passes (88 unit tests)

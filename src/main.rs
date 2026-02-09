@@ -216,7 +216,7 @@ async fn main() {
             }
             conversation.push(Message {
                 role: Role::Assistant,
-                content: response.clone(),
+                content: response,
             });
             if stop_reason != StopReason::ToolUse {
                 if stop_reason == StopReason::MaxTokens {
@@ -231,7 +231,7 @@ async fn main() {
                 break;
             }
             let mut tool_results: Vec<ContentBlock> = Vec::new();
-            for block in &response {
+            for block in &conversation.last().unwrap().content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     if input.is_null() {
                         let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
@@ -572,5 +572,24 @@ mod tests {
         let mut conv: Vec<Message> = Vec::new();
         recover_conversation(&mut conv); // should not panic
         assert!(conv.is_empty());
+    }
+
+    #[test]
+    fn system_prompt_contains_environment_info() {
+        let prompt = build_system_prompt();
+        assert!(prompt.contains(std::env::consts::OS), "should contain OS");
+        assert!(
+            prompt.contains(std::env::consts::ARCH),
+            "should contain arch"
+        );
+        assert!(prompt.contains("read_file"), "should list tools");
+        assert!(
+            prompt.contains("edit_file"),
+            "should contain edit_file guidance"
+        );
+        assert!(
+            prompt.contains("read before editing"),
+            "should contain safety rules"
+        );
     }
 }

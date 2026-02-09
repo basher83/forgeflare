@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{io::Write, sync::LazyLock};
+use std::{io::Write, sync::LazyLock, time::Duration};
 
 /// Suppresses ANSI color when NO_COLOR env var is set (https://no-color.org/).
 static USE_COLOR: LazyLock<bool> = LazyLock::new(|| std::env::var_os("NO_COLOR").is_none());
@@ -181,10 +181,11 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     pub fn new() -> Result<Self, AgentError> {
         let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| AgentError::MissingApiKey)?;
-        Ok(Self {
-            client: reqwest::Client::new(),
-            api_key,
-        })
+        let client = reqwest::ClientBuilder::new()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(300))
+            .build()?;
+        Ok(Self { client, api_key })
     }
 
     pub async fn send_message(

@@ -33,7 +33,7 @@ src/
   tools/mod.rs    — 5 tools with tools! macro (read, list, bash, edit, search)
 ```
 
-84 tests
+88 tests
 
 ## Dependencies
 
@@ -48,7 +48,7 @@ src/
 ## Code Patterns
 
 **Error Handling**
-- Define error types in each module with `thiserror`
+- `AgentError` in api.rs via `thiserror`; tool errors are raw `Result<String, String>`
 - Tool errors returned as text in Anthropic API responses
 
 **Async**
@@ -62,7 +62,7 @@ src/
 - Interactive REPL or read from stdin
 
 **HTTP Client**
-- Roll own with `reqwest`
+- Roll own with `reqwest` (connect timeout 30s, request timeout 300s)
 - POST to `https://api.anthropic.com/v1/messages`
 - SSE decoding for streaming responses
 - Parse `stop_reason` to detect tool_use vs end_turn

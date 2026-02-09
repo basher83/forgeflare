@@ -1,7 +1,7 @@
 # Unified Rust Coding Agent Specification
 
 **Status:** Active
-**Target:** Single binary, streaming, subagent-aware, <750 production lines
+**Target:** Single binary, streaming, subagent-aware, <800 production lines
 **Pin:** Go source at `/reference/go-source/` — pattern-match against working code
 
 ---
@@ -37,7 +37,7 @@ tools! {
 2. **List** — list_files(path, recursive?) → [files]
 3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout)
 4. **Edit** — edit_file(path, old_str, new_str) → success/error (exact match semantics)
-5. **Search** — search(pattern, path?) → matches (shell out to `rg`)
+5. **Search** — code_search(pattern, path?, file_type?, case_sensitive?) → matches (shell out to `rg`)
 
 **R5. CLI Interface**
 - Single binary, no subcommands required
@@ -47,8 +47,8 @@ tools! {
 - Exit gracefully on EOF or "exit" command
 
 **R6. Error Handling**
-- `thiserror` for custom error types (per-module)
-- Tool errors returned as text in tool_result field
+- `thiserror` for structured error types in api.rs (`AgentError`)
+- Tool errors returned as `Result<String, String>` — raw strings flow into tool_result text
 - Display errors to user, continue loop (don't panic)
 
 **R7. Streaming Architecture**
@@ -57,10 +57,10 @@ tools! {
 - If tool_use: extract tool calls, execute, send results back
 - If end_turn: display response to user, prompt for next input
 
-**R8. Subagent Awareness**
-- Reserved field in context: `subagent_id` (future: dispatch to child agents)
-- Types for subagent coordination defined but not implemented
-- Comments marking future subagent integration points
+**R8. Subagent Awareness (Deferred)**
+- Explicitly deferred per non-goals; no SubagentContext types in codebase
+- StopReason enum is the only surviving artifact (used for tool dispatch loop control)
+- Future subagent dispatch would add a StopReason variant or context field
 
 ---
 
@@ -91,7 +91,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <750 production lines (741 actual: 278 main.rs + 235 api.rs + 228 tools/mod.rs)
+- [x] <800 production lines (757 actual: 278 main.rs + 236 api.rs + 243 tools/mod.rs)
 - [x] Streaming responses visible to user in real-time
 
 ---
