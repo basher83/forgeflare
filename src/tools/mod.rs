@@ -7,7 +7,8 @@ const BASH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_READ_SIZE: u64 = 1024 * 1024; // 1MB
 const MAX_BASH_OUTPUT: usize = 100 * 1024; // 100KB
 
-/// Patterns that indicate destructive bash commands. Checked before execution.
+/// Destructive bash patterns blocked before execution (defense-in-depth).
+/// Covers combined flags, separate flags, and long-form flag orderings.
 const BLOCKED_PATTERNS: &[&str] = &[
     "rm -rf /",
     "rm -rf ~",
@@ -17,11 +18,16 @@ const BLOCKED_PATTERNS: &[&str] = &[
     "rm -fr ~",
     "rm -fr .",
     "rm -fr *",
+    "rm -r -f",
+    "rm -f -r",
+    "rm --recursive --force",
+    "rm --force --recursive",
     "mkfs.",
     "of=/dev/sd",
     "of=/dev/nvme",
     "> /dev/sd",
     "chmod -r 777 /",
+    "chmod 777 /",
     ":(){ :|:& };:",
 ];
 
@@ -602,6 +608,44 @@ mod tests {
         let result = bash_exec(serde_json::json!({"command": "rm -fr /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block rm -fr /: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_rm_separate_flags() {
+        // rm -r -f / uses separate flags instead of combined
+        let result = bash_exec(serde_json::json!({"command": "rm -r -f /"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block rm -r -f: {err}");
+
+        let result = bash_exec(serde_json::json!({"command": "rm -f -r /important"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block rm -f -r: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_rm_long_flags() {
+        // Long flag forms: --recursive --force
+        let result = bash_exec(serde_json::json!({"command": "rm --recursive --force /some/path"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block rm --recursive --force: {err}"
+        );
+
+        let result = bash_exec(serde_json::json!({"command": "rm --force --recursive /some/path"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block rm --force --recursive: {err}"
+        );
+    }
+
+    #[test]
+    fn bash_blocks_chmod_777_without_r_flag() {
+        // chmod 777 / (without -R) is also destructive
+        let result = bash_exec(serde_json::json!({"command": "chmod 777 /"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block chmod 777 /: {err}");
     }
 
     #[test]

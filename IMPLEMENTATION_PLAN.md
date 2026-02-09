@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~862 production lines across 3 source files with 110 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model`, `--max-tokens` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec applies 50-line cap before 100KB byte cap (prevents line-count bypass on large output). bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging. bash command guard deny-list blocks dangerous patterns (rm -rf /, fork bombs, dd to block devices) before execution, including reversed flag order variants (rm -fr /). Tool error display in non-verbose mode shows is_error results with 200-char truncation. Tool loop iteration limit calls recover_conversation to maintain alternation. Tool result visibility in non-verbose mode shows result size for successful calls. Tool schema descriptions enriched with operational limits. Retry-After header surfaced on 429 rate limit API responses.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~868 production lines across 3 source files with 113 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model`, `--max-tokens` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec applies 50-line cap before 100KB byte cap (prevents line-count bypass on large output). bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging. bash command guard deny-list blocks dangerous patterns (rm -rf /, fork bombs, dd to block devices) before execution, including expanded flag ordering coverage (rm -r -f, rm --recursive --force, chmod 777 / without -R). Tool error display in non-verbose mode shows is_error results with 200-char truncation. Tool loop iteration limit calls recover_conversation to maintain alternation. Tool result visibility in non-verbose mode shows result size for successful calls. Tool schema descriptions enriched with operational limits. Retry-After header surfaced on 429 rate limit API responses.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 110 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 113 unit tests.
 
 File structure:
 - src/main.rs (~321 production lines)
 - src/api.rs (~255 production lines)
-- src/tools/mod.rs (~286 production lines)
-- Total: ~862 production lines
+- src/tools/mod.rs (~292 production lines)
+- Total: ~868 production lines
 
 ## Architectural Decisions
 
@@ -168,6 +168,8 @@ Retry-After header on 429 responses surfaces actionable info. The Anthropic API 
 
 Bash command guard must cover flag ordering variations. `rm -rf /` is blocked but `rm -fr /` (reversed flag order) performs the same operation and was not caught. Added `-fr` variants to the blocklist alongside existing `-rf` patterns.
 
+Bash command guard patterns must cover multiple flag orderings the model might generate. The initial guard caught `rm -rf` and `rm -fr` (combined flags) but missed `rm -r -f` (separate flags) and `rm --recursive --force` (long flags). These are plausible model outputs. Similarly, `chmod 777 /` (without `-R`) is as destructive as `chmod -R 777 /`. Pattern matching is fundamentally limited against adversarial inputs, but covering common model-generated forms provides effective defense-in-depth.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -194,7 +196,7 @@ The specification has been updated to reflect implementation decisions:
 - Line target updated from <700 to <800 to accommodate dynamic system prompt, HTTP timeouts, and output caps (justified trade-offs: operational safety and tool robustness).
 - Line target updated from <800 to <850 to accommodate walk depth limit, OOB logging, and labeled stderr separator (justified trade-offs: stack safety, model accuracy, debuggability).
 - Line target updated from <850 to <870 to accommodate tool loop recovery, result visibility, enriched schema descriptions, and retry-after header (justified trade-offs: bug fix, UX, model guidance, diagnostics).
-- Current 862 line count is within the <870 budget. Recent additions: tool loop iteration limit calls recover_conversation, result size display in non-verbose mode, enriched tool schema descriptions, Retry-After header extraction, BLOCKED_PATTERNS now includes -fr flag order variants.
+- Line target updated from <870 to <870 (no change) — expanded guard patterns offset by trimmed comment. 868 actual.
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
@@ -257,12 +259,15 @@ The specification has been updated to reflect implementation decisions:
 [x] Bash command guard: chmod -R 777 / blocked (case-insensitive match)
 [x] Bash command guard: mkfs.* blocked
 [x] Bash command guard: rm -fr (reversed flag order) blocked alongside rm -rf (1 new test)
+[x] Bash command guard: rm -r -f and rm -f -r (separate flags) blocked (1 new test)
+[x] Bash command guard: rm --recursive --force and --force --recursive (long flags) blocked (1 new test)
+[x] Bash command guard: chmod 777 / (without -R) blocked (1 new test)
 [x] edit_file: text deletion (non-empty old_str, empty new_str) works correctly
 [x] code_search: invalid regex returns descriptive error via rg exit code 2
 [x] Tool errors displayed in non-verbose mode (is_error results shown with 200-char truncation)
 [x] --max-tokens CLI flag (default 16384, flows through to API)
 [x] specs/README.md line count corrected (<700 → <870)
-[x] ~862 production lines (321 main.rs + 255 api.rs + 286 tools/mod.rs)
+[x] ~868 production lines (321 main.rs + 255 api.rs + 292 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt and max_tokens parameters (runtime context injection)
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
@@ -274,4 +279,4 @@ The specification has been updated to reflect implementation decisions:
 [x] Tool result visibility in non-verbose mode: shows result size for successful calls
 [x] Tool schema descriptions enriched with operational limits (1MB, 100KB, 1000, 50, 120s)
 [x] Retry-After header surfaced on 429 rate limit API responses
-[x] cargo test passes (110 unit tests)
+[x] cargo test passes (113 unit tests)
