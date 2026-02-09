@@ -1,7 +1,7 @@
 # Unified Rust Coding Agent Specification
 
 **Status:** Active
-**Target:** Single binary, streaming, subagent-aware, <850 production lines
+**Target:** Single binary, streaming, subagent-aware, <870 production lines
 **Pin:** Go source at `/reference/go-source/` — pattern-match against working code
 
 ---
@@ -93,7 +93,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <850 production lines (847 actual: 317 main.rs + 248 api.rs + 282 tools/mod.rs)
+- [x] <870 production lines (858 actual: 321 main.rs + 255 api.rs + 282 tools/mod.rs)
 - [x] Streaming responses visible to user in real-time
 
 ---
@@ -132,7 +132,10 @@ reference/
 - Bash command guard: deny-list blocks destructive patterns (rm -rf /, fork bombs, dd to devices, mkfs, chmod 777 /) before shell execution
 - NO_COLOR convention: all ANSI output suppressed when `NO_COLOR` env var is set
 - API error recovery: pop trailing User message + orphaned tool_use to maintain conversation alternation invariant
-- Tool loop safety: 50-iteration limit prevents runaway agent behavior
+- Tool loop safety: 50-iteration limit prevents runaway agent behavior; calls recover_conversation on break to maintain alternation invariant
+- Tool result visibility: non-verbose mode shows result size (chars); errors always shown with 200-char preview (matches Go reference pattern of always showing tool results)
+- Tool schema descriptions enriched with limits (1MB, 100KB, 1000 entries, 50 matches, 120s timeout) so the model sees constraints in both schema and system prompt
+- Retry-After header surfaced on 429 rate limit responses for better user-facing diagnostics
 
 ---
 

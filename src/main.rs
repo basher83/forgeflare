@@ -215,6 +215,7 @@ async fn main() {
                 eprintln!(
                     "{c}[warning]{r} Tool loop hit {MAX_TOOL_ITERATIONS} iterations, breaking"
                 );
+                recover_conversation(&mut conversation);
                 break;
             }
             if cli.verbose {
@@ -286,14 +287,17 @@ async fn main() {
                         ..
                     } = result
                     {
-                        if cli.verbose {
-                            let (c, r) = (color("\x1b[92m"), color("\x1b[0m"));
+                        let (label, clr) = if is_error == &Some(true) {
+                            ("error", color("\x1b[91m"))
+                        } else {
+                            ("result", color("\x1b[92m"))
+                        };
+                        let r = color("\x1b[0m");
+                        if is_error == &Some(true) || cli.verbose {
                             let t: String = content.chars().take(200).collect();
-                            eprintln!("{c}result{r}: {t}");
-                        } else if is_error == &Some(true) {
-                            let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
-                            let t: String = content.chars().take(200).collect();
-                            eprintln!("{c}error{r}: {t}");
+                            eprintln!("{clr}{label}{r}: {t}");
+                        } else {
+                            eprintln!("{clr}{label}{r}: {} chars", content.len());
                         }
                     }
                     tool_results.push(result);
@@ -632,6 +636,36 @@ mod tests {
         // The only boundary is at index 0; keep_last = 0 → falls through to truncation
         // Conversation should be preserved (single boundary can't trim)
         assert!(!conv.is_empty());
+    }
+
+    #[test]
+    fn tool_iteration_limit_recovery_cleans_trailing_tool_results() {
+        // When the tool loop hits MAX_TOOL_ITERATIONS, the last message is a User
+        // message with tool_results (no matching Assistant reply). recover_conversation
+        // must pop both the tool_results AND the orphaned tool_use to prevent
+        // consecutive User messages that the API would reject with 400.
+        let mut conv = vec![
+            user_text("start task"),
+            assistant_tool_use(),
+            user_tool_result("iteration result"),
+        ];
+        // Simulates what happens at the iteration limit break
+        recover_conversation(&mut conv);
+        assert_eq!(
+            conv.len(),
+            1,
+            "should pop tool_result and orphaned tool_use"
+        );
+        assert!(matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "start task"));
+    }
+
+    #[test]
+    fn tool_iteration_limit_recovery_with_assistant_text_only() {
+        // If the loop breaks when the last message is an Assistant text (no pending
+        // tool results), recover_conversation should be a no-op.
+        let mut conv = vec![user_text("question"), assistant_text("answer")];
+        recover_conversation(&mut conv);
+        assert_eq!(conv.len(), 2, "should not modify clean conversation");
     }
 
     #[test]

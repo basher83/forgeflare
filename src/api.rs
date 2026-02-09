@@ -221,9 +221,16 @@ impl AnthropicClient {
             .send()
             .await?;
         if !response.status().is_success() {
-            let (status, body) = (response.status(), response.text().await.unwrap_or_default());
+            let status = response.status();
+            let retry = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| format!(" (retry after {v}s)"))
+                .unwrap_or_default();
+            let body = response.text().await.unwrap_or_default();
             return Err(AgentError::StreamParse(format!(
-                "API returned {status}: {body}"
+                "API returned {status}{retry}: {body}"
             )));
         }
 
