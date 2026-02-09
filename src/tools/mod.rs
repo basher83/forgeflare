@@ -70,8 +70,8 @@ tools! {
     search_exec;
 }
 
-fn read_exec(input: Value) -> Result<String, String> {
-    let path = input["path"].as_str().ok_or("path is required")?;
+/// Read a text file with 1MB size guard, binary detection, and UTF-8 validation.
+fn read_text_file(path: &str) -> Result<String, String> {
     let meta = fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if meta.len() > MAX_READ_SIZE {
         let (size, max) = (meta.len() / 1024, MAX_READ_SIZE / 1024);
@@ -79,9 +79,14 @@ fn read_exec(input: Value) -> Result<String, String> {
     }
     let raw = fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     if raw[..raw.len().min(8192)].contains(&0) {
-        return Err(format!("{path}: binary file, cannot display contents"));
+        return Err(format!("{path}: binary file"));
     }
-    let content = String::from_utf8(raw).map_err(|_| format!("{path}: not valid UTF-8"))?;
+    String::from_utf8(raw).map_err(|_| format!("{path}: not valid UTF-8"))
+}
+
+fn read_exec(input: Value) -> Result<String, String> {
+    let path = input["path"].as_str().ok_or("path is required")?;
+    let content = read_text_file(path)?;
     Ok(content
         .lines()
         .enumerate()
@@ -242,12 +247,7 @@ fn edit_exec(input: Value) -> Result<String, String> {
         fs::write(path, new_str).map_err(|e| format!("write: {e}"))?;
         return Ok(format!("Created {path_s}"));
     }
-    let meta = fs::metadata(path).map_err(|e| format!("{path_s}: {e}"))?;
-    if meta.len() > MAX_READ_SIZE {
-        let (size, max) = (meta.len() / 1024, MAX_READ_SIZE / 1024);
-        return Err(format!("{path_s}: {size}KB exceeds {max}KB edit limit"));
-    }
-    let content = fs::read_to_string(path).map_err(|e| format!("{path_s}: {e}"))?;
+    let content = read_text_file(path_s)?;
     if old_str.is_empty() {
         fs::write(path, format!("{content}{new_str}")).map_err(|e| format!("write: {e}"))?;
     } else {
@@ -1045,6 +1045,20 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds"));
+    }
+
+    #[test]
+    fn edit_rejects_binary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.bin");
+        fs::write(&path, b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "PNG",
+            "new_str": "JPG"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("binary file"));
     }
 
     #[test]

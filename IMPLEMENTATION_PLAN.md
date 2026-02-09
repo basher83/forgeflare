@@ -2,7 +2,7 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 122 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 123 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
@@ -10,7 +10,7 @@ Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bomb
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 122 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 123 unit tests.
 
 File structure:
 - src/main.rs (~321 production lines)
@@ -170,6 +170,8 @@ Bash drain threads must read bounded data. The original `drain` helper used `rea
 
 Bash command guard must block `git push --force` and `git push -f`. The system prompt instructs the model "Never run destructive ops (force push, reset --hard) without user approval" but soft instructions are not enforcement. Force-pushing can permanently destroy shared repository history (once the remote garbage-collects old refs). The `--force-with-lease` variant is also blocked as a false positive due to substring matching — this is an acceptable tradeoff since false positives for destructive operations are better than false negatives. The error message clearly identifies the blocked pattern so users can adjust.
 
+`edit_file` must detect binary files before attempting string operations. Without binary detection, `fs::read_to_string` on a binary file produces a cryptic UTF-8 error instead of a clear "binary file" message. The fix: extract a shared `read_text_file` helper that both `read_exec` and `edit_exec` call. The helper performs the metadata size check, raw read, null-byte binary detection (first 8KB), and UTF-8 conversion. This eliminates duplication (DRY) between the two functions while adding binary safety to edits. Line-count neutral thanks to the shared extraction.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -206,6 +208,7 @@ The specification has been updated to reflect implementation decisions:
 - Bash command guard expanded: redirect-to-device patterns (`> /dev/nvme`, `> /dev/vd`, `> /dev/hd`) and dd-to-device patterns (`of=/dev/vd`, `of=/dev/hd`) cover all common device families.
 - list_files schema description updated to include `.devenv` to match SKIP_DIRS constant.
 - Bash command guard expanded: `git push --force` and `git push -f` blocked, closing the gap between system prompt safety promises and code enforcement.
+- `edit_file` now detects binary files via shared `read_text_file` helper (null-byte check in first 8KB). DRY extraction eliminates duplication with `read_exec`. 1 new test (123 total).
 
 ## Verification Checklist
 
@@ -224,10 +227,10 @@ The specification has been updated to reflect implementation decisions:
 [x] Non-interactive mode: suppresses prompts when stdin is piped
 [x] read_file: 1MB size limit, binary detection via null byte check
 [x] list_files: recursive parameter, SKIP_DIRS filter, 1000 entry cap, sorted output
-[x] edit_file: 1MB size limit, schema documents create/append mode for empty old_str
+[x] edit_file: 1MB size limit, binary detection via shared read_text_file helper, schema documents create/append mode for empty old_str
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (122 unit tests)
+[x] cargo fmt/clippy/build/test passes (123 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -253,4 +256,4 @@ The specification has been updated to reflect implementation decisions:
 [x] search_exec: 50-line cap applied before 100KB byte cap
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs)
+[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs, unchanged after read_text_file extraction)
