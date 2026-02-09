@@ -1,11 +1,9 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::Write;
-use std::sync::LazyLock;
+use std::{io::Write, sync::LazyLock};
 
-/// Respects the NO_COLOR convention (https://no-color.org/).
-/// When NO_COLOR is set (any value), all ANSI color output is suppressed.
+/// Suppresses ANSI color when NO_COLOR env var is set (https://no-color.org/).
 static USE_COLOR: LazyLock<bool> = LazyLock::new(|| std::env::var_os("NO_COLOR").is_none());
 
 pub fn color(code: &str) -> &str {
@@ -63,12 +61,6 @@ pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
 }
-
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub struct SubagentContext {
-    pub subagent_id: Option<String>,
-} // R8: future dispatch
 
 #[derive(Default)]
 struct SseParser {
@@ -200,10 +192,11 @@ impl AnthropicClient {
         messages: &[Message],
         tools: &[Value],
         model: &str,
+        system_prompt: &str,
     ) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
         let body = serde_json::json!({
             "model": model, "max_tokens": 16384, "stream": true,
-            "system": "You are a coding agent with tools for reading files, listing directories, running bash commands, editing files, and searching code.\n\nWorkflow: 1) Understand the request. 2) Explore relevant code with read_file and code_search before making changes. 3) Plan your approach. 4) Make targeted edits. 5) Verify changes work.\n\nRules:\n- ALWAYS read a file before editing it. Never edit blind.\n- Use code_search to find relevant code across the project before making assumptions.\n- Make minimal, focused changes. Don't refactor unrelated code.\n- When editing, include enough context in old_str to match exactly once.\n- Verify edits by reading the file after changes.\n- For bash commands: avoid destructive operations (rm -rf, force push) without explicit user approval.\n- If a command fails, analyze the error before retrying with a different approach.\n- Explain what you're doing and why, but be concise.",
+            "system": system_prompt,
             "messages": messages, "tools": tools
         });
         let response = self
@@ -211,7 +204,6 @@ impl AnthropicClient {
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
             .json(&body)
             .send()
             .await?;

@@ -28,7 +28,7 @@ Binary: `agent`
 
 ```
 src/
-  main.rs         — CLI loop, user interface
+  main.rs         — CLI loop, user interface, system prompt (build_system_prompt)
   api.rs          — Anthropic client (reqwest + SSE)
   tools/mod.rs    — 5 tools with tools! macro (read, list, bash, edit, search)
 ```
@@ -66,6 +66,7 @@ src/
 - POST to `https://api.anthropic.com/v1/messages`
 - SSE decoding for streaming responses
 - Parse `stop_reason` to detect tool_use vs end_turn
+- System prompt passed as parameter (dynamic cwd/platform injection)
 
 **JSON**
 - `serde` + `serde_json` with derive macros

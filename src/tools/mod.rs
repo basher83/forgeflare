@@ -1,10 +1,6 @@
 use crate::api::ContentBlock;
 use serde_json::Value;
-use std::fs;
-use std::io::Read;
-use std::path::Path;
-use std::process::Command;
-use std::time::Duration;
+use std::{fs, io::Read, path::Path, process::Command, time::Duration};
 use wait_timeout::ChildExt;
 
 const BASH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -124,10 +120,9 @@ fn bash_exec(input: Value) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("exec failed: {e}"))?;
-    fn drain<R: Read + Send + 'static>(r: R) -> std::thread::JoinHandle<String> {
+    fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<String> {
         std::thread::spawn(move || {
             let mut s = String::new();
-            let mut r = r;
             r.read_to_string(&mut s).ok();
             s
         })

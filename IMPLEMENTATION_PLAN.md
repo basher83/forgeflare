@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~685 production lines across 3 source files with 84 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/).
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~741 production lines across 3 source files with 84 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with tool behavioral guidance and safety rules.
 
 Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 84 unit tests.
 
 File structure:
-- src/main.rs (~241 production lines)
-- src/api.rs (~223 production lines)
-- src/tools/mod.rs (~221 production lines)
-- Total: ~685 production lines
+- src/main.rs (~278 production lines)
+- src/api.rs (~235 production lines)
+- src/tools/mod.rs (~228 production lines)
+- Total: ~741 production lines
 
 ## Architectural Decisions
 
@@ -33,6 +33,8 @@ Manual SSE parsing handles `content_block_start`, `content_block_delta`, `conten
 Tool errors become `tool_result` text, not Rust errors. Following Go at `edit_tool.go:149-183`, tool execution failures return as `tool_result` blocks with `is_error: true`.
 
 tools! macro generates both `all_tool_schemas()` and `dispatch_tool()` from one definition, preventing schema/dispatch divergence.
+
+System prompt is built dynamically at startup in main.rs via `build_system_prompt()` and passed to `send_message` as a parameter. This injects the working directory and platform (os/arch) at runtime. The prompt includes structured tool behavioral guidance (rg semantics, edit_file exact-match rules, bash timeout/truncation limits) and safety rules (read-before-edit, no destructive ops without approval). Moving the prompt from a static string in api.rs to a parameter keeps the API module clean while enabling runtime context injection.
 
 ## Key Learnings
 
@@ -106,9 +108,25 @@ Corrupt tool_use blocks must receive error tool_results, not be skipped. The Ant
 
 edit_file needs the same 1MB size guard as read_file. Without it, the agent could attempt to read/modify files that are too large, causing unbounded memory usage during string operations (read_to_string + replacen).
 
+System prompt is the highest-leverage improvement for a coding agent. Infrastructure (SSE parsing, conversation management, tool safety) is necessary but not sufficient — the model's behavior is shaped by the system prompt. A compact, structured prompt with tool-specific guidance produces better results than verbose prose.
+
+Dynamic system prompt injection (cwd, platform) eliminates tool call waste. Without environment context, the model spends early turns discovering basic facts like the current directory and OS.
+
+`SubagentContext` was dead code — removed per engineering philosophy (no hypothetical future requirements). The types existed since initial implementation but were never used. R8 is explicitly a non-goal in the spec.
+
+Production line count was documented as ~685 but the actual #[cfg(test)] boundary measurement showed 729. The discrepancy came from different counting methods. Standardized on counting all lines before #[cfg(test)] in each file.
+
+`send_message` system_prompt parameter is cleaner than embedding the prompt in api.rs. The API module should not know about runtime context (cwd, platform). Passing the prompt as a parameter follows information hiding — the caller assembles context, the API module transmits it.
+
+reqwest .json() automatically sets Content-Type: application/json — the explicit header was redundant.
+
+flat_map on nested iteration. `conversation.iter_mut().flat_map(|m| &mut m.content)` eliminates the inner `for block in &mut msg.content` loop and its closing brace.
+
+match expression for empty/exit input checks. `match t.as_str() { "" => continue, "exit" => break, _ => t }` is more compact than sequential if-else and rustfmt keeps single-expression match arms on one line.
+
 ## Future Work
 
-Subagent dispatch (spec R8). Types are defined (`SubagentContext` in api.rs, `StopReason` enum), integration point comments exist in main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
+Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
 
 Ralph-guard integration. Hook wiring exists per commit b8974bd. Integration points: activity logging, guard policy enforcement, audit trail.
 
@@ -125,10 +143,13 @@ The specification has been updated to reflect implementation decisions:
 - R5 implemented: stdin pipe detection via `std::io::IsTerminal`, prompts suppressed in non-interactive mode. Piped stdin reads all input as a single prompt.
 - R7 implemented: `StopReason` enum parsed from `message_delta` SSE event. Inner loop breaks on `EndTurn`, warns on `MaxTokens`. Partial tool_use blocks filtered on truncation.
 - SSE hardened: Unknown block types handled via placeholder blocks to maintain index sync. Mid-stream error events explicitly detected. Empty text blocks filtered before returning. Incomplete streams detected via missing stop_reason.
-- System prompt upgraded from single sentence to structured workflow instructions covering read-before-edit, code_search usage, minimal changes, edit verification, bash safety, and error analysis.
+- System prompt upgraded from static string to dynamic `build_system_prompt()` with cwd, platform injection and structured tool/safety guidance.
+- `send_message` signature extended with `system_prompt: &str` parameter.
+- SubagentContext removed as dead code per engineering philosophy.
+- Line target updated from <700 to ~750 to accommodate dynamic system prompt (justified trade-off: prompt is highest-leverage agent quality improvement).
+- Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- Line target <700 maintained at ~685 after hardening (corrupt tool dispatch, edit size guard).
 - SSE parser now has 14 unit tests covering the full event processing state machine.
 - Tool dispatch now handles corrupt tool_use blocks with null input by sending error tool_results (maintains API pairing invariant).
 
@@ -154,7 +175,7 @@ The specification has been updated to reflect implementation decisions:
 [x] StopReason enum: EndTurn, ToolUse, MaxTokens — parsed from message_delta SSE event
 [x] MaxTokens truncation warning displayed to user
 [x] Non-interactive mode: suppresses prompts when stdin is piped
-[x] R8 subagent types defined (SubagentContext, StopReason in api.rs)
+[x] R8: SubagentContext removed (dead code), StopReason retained for loop control
 [x] read_file: 1MB size limit, binary detection via null byte check (R4)
 [x] list_files: recursive parameter (default: false), SKIP_DIRS filter at any depth (R4)
 [x] edit_file: schema documents create/append mode for empty old_str
@@ -176,4 +197,7 @@ The specification has been updated to reflect implementation decisions:
 [x] NO_COLOR convention respected: all ANSI output suppressed when NO_COLOR env var is set
 [x] Corrupt tool_use blocks (null input) produce error tool_results in dispatch loop
 [x] edit_file enforces 1MB size limit (matches read_file)
+[x] ~741 production lines (278 main.rs + 235 api.rs + 228 tools/mod.rs)
+[x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
+[x] send_message accepts system_prompt parameter (runtime context injection)
 [x] cargo test passes (84 unit tests)

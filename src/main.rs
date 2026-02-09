@@ -6,6 +6,37 @@ use clap::Parser;
 use std::io::{IsTerminal, Write};
 use tools::{all_tool_schemas, dispatch_tool};
 
+fn build_system_prompt() -> String {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".into());
+    format!(
+        "You are a coding agent with tools: read_file, list_files, bash, edit_file, code_search.\n\
+         \n\
+         Environment: {cwd} on {os}/{arch}\n\
+         \n\
+         Workflow: 1) Understand the request. 2) Explore with read_file/code_search before changes. \
+         3) Plan, then execute. 4) Verify edits by reading the file back. 5) Run tests.\n\
+         \n\
+         Tool notes:\n\
+         - code_search wraps rg: regex, case-insensitive by default, file_type filters (\"rust\",\"js\")\n\
+         - edit_file: old_str must match exactly once (including whitespace/indentation). \
+         Empty old_str creates or appends. old_str != new_str.\n\
+         - bash: 120s timeout, 100KB output limit, non-zero exit = is_error\n\
+         - list_files: recursive=true to recurse; skips .git/node_modules/target/.venv/vendor\n\
+         \n\
+         Rules:\n\
+         - Always read before editing. Never edit blind.\n\
+         - Minimal, focused changes. No unrelated refactoring.\n\
+         - Verify edits by reading the file back.\n\
+         - No destructive bash ops (rm -rf, force push, reset --hard) without user approval.\n\
+         - On failure, analyze the error before retrying.\n\
+         - Be concise.",
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+    )
+}
+
 const MAX_CONVERSATION_BYTES: usize = 720_000; // ~180K tokens at ~4 chars/token
 const MAX_TOOL_ITERATIONS: usize = 50; // Safety limit for tool dispatch loop
 
@@ -45,19 +76,16 @@ fn trim_conversation(conversation: &mut Vec<Message>, max_bytes: usize) {
         truncate_oversized_blocks(conversation, max_bytes);
         return;
     }
+    let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
     for &cut in &boundaries[1..=keep_last] {
         let prefix: usize = sizes[..cut].iter().sum();
         if total - prefix <= max_bytes {
-            let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
-            eprintln!(
-                "{c}[context]{r} Trimmed {cut} messages ({prefix} bytes) to fit context window"
-            );
+            eprintln!("{c}[context]{r} Trimmed {cut} messages ({prefix} bytes) to fit context");
             conversation.drain(..cut);
             return;
         }
     }
     let dropped = boundaries[keep_last];
-    let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
     eprintln!("{c}[context]{r} Trimmed to last exchange ({dropped} messages dropped)");
     conversation.drain(..dropped);
     truncate_oversized_blocks(conversation, max_bytes);
@@ -72,25 +100,23 @@ fn truncate_oversized_blocks(conversation: &mut [Message], max_bytes: usize) {
         return;
     }
     let mut remaining = total - max_bytes;
-    for msg in conversation.iter_mut() {
-        for block in &mut msg.content {
-            if remaining == 0 {
-                return;
-            }
-            let text = match block {
-                ContentBlock::ToolResult { content, .. } => content,
-                ContentBlock::Text { text } => text,
-                _ => continue,
-            };
-            if text.len() > 10_000 {
-                let keep = text.len().saturating_sub(remaining).max(1_000);
-                let end = (keep..text.len())
-                    .find(|&i| text.is_char_boundary(i))
-                    .unwrap_or(keep);
-                remaining = remaining.saturating_sub(text.len() - end);
-                text.truncate(end);
-                text.push_str("\n... (truncated to fit context window)");
-            }
+    for block in conversation.iter_mut().flat_map(|m| &mut m.content) {
+        if remaining == 0 {
+            return;
+        }
+        let text = match block {
+            ContentBlock::ToolResult { content, .. } => content,
+            ContentBlock::Text { text } => text,
+            _ => continue,
+        };
+        if text.len() > 10_000 {
+            let keep = text.len().saturating_sub(remaining).max(1_000);
+            let end = (keep..text.len())
+                .find(|&i| text.is_char_boundary(i))
+                .unwrap_or(keep);
+            remaining = remaining.saturating_sub(text.len() - end);
+            text.truncate(end);
+            text.push_str("\n... (truncated to fit context window)");
         }
     }
 }
@@ -112,6 +138,7 @@ async fn main() {
         std::process::exit(1);
     });
     let schemas = all_tool_schemas();
+    let system_prompt = build_system_prompt();
     if cli.verbose {
         eprintln!("[verbose] Initialized {} tools", schemas.len());
     }
@@ -120,7 +147,6 @@ async fn main() {
         println!("Chat with Claude (type 'exit' or Ctrl-D to quit)");
     }
     let mut conversation: Vec<Message> = Vec::new();
-    // Piped stdin: read all input as a single prompt (R5)
     let mut piped_input = if !interactive {
         let mut buf = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).ok();
@@ -128,7 +154,6 @@ async fn main() {
     } else {
         None
     };
-    let stdin = std::io::stdin();
     loop {
         let input = match piped_input.take() {
             Some(p) => p,
@@ -138,17 +163,18 @@ async fn main() {
                 print!("{c}You{r}: ");
                 std::io::stdout().flush().ok();
                 let mut line = String::new();
-                if stdin.read_line(&mut line).map_or(true, |n| n == 0) {
+                if std::io::stdin()
+                    .read_line(&mut line)
+                    .map_or(true, |n| n == 0)
+                {
                     break;
                 }
                 let t = line.trim().to_string();
-                if t.is_empty() {
-                    continue;
+                match t.as_str() {
+                    "" => continue,
+                    "exit" => break,
+                    _ => t,
                 }
-                if t == "exit" {
-                    break;
-                }
-                t
             }
         };
         if cli.verbose {
@@ -158,13 +184,12 @@ async fn main() {
             role: Role::User,
             content: vec![ContentBlock::Text { text: input }],
         });
-        // Inner loop: send → dispatch tools → repeat (R8: subagent dispatch integration point)
         let mut tool_iterations = 0usize;
         loop {
             if tool_iterations >= MAX_TOOL_ITERATIONS {
                 let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
                 eprintln!(
-                    "{c}[warning]{r} Tool loop hit {MAX_TOOL_ITERATIONS} iterations, breaking to prevent runaway"
+                    "{c}[warning]{r} Tool loop hit {MAX_TOOL_ITERATIONS} iterations, breaking"
                 );
                 break;
             }
@@ -174,7 +199,7 @@ async fn main() {
             }
             trim_conversation(&mut conversation, MAX_CONVERSATION_BYTES);
             let (response, stop_reason) = match client
-                .send_message(&conversation, &schemas, &cli.model)
+                .send_message(&conversation, &schemas, &cli.model, &system_prompt)
                 .await
             {
                 Ok(r) => r,
