@@ -7,6 +7,20 @@ const BASH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_READ_SIZE: u64 = 1024 * 1024; // 1MB
 const MAX_BASH_OUTPUT: usize = 100 * 1024; // 100KB
 
+/// Patterns that indicate destructive bash commands. Checked before execution.
+const BLOCKED_PATTERNS: &[&str] = &[
+    "rm -rf /",
+    "rm -rf ~",
+    "rm -rf .",
+    "rm -rf *",
+    "mkfs.",
+    "of=/dev/sd",
+    "of=/dev/nvme",
+    "> /dev/sd",
+    "chmod -r 777 /",
+    ":(){ :|:& };:",
+];
+
 macro_rules! tools {
     ($($name:expr, $desc:expr, $schema:expr, $func:expr);+ $(;)?) => {
         pub fn all_tool_schemas() -> Vec<Value> {
@@ -132,6 +146,12 @@ fn truncate_with_marker(s: &mut String, max: usize) {
 
 fn bash_exec(input: Value) -> Result<String, String> {
     let command = input["command"].as_str().ok_or("command is required")?;
+    let lower = command.to_lowercase();
+    if let Some(pat) = BLOCKED_PATTERNS.iter().find(|p| lower.contains(*p)) {
+        return Err(format!(
+            "blocked: command matches dangerous pattern '{pat}'"
+        ));
+    }
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(command);
     if let Some(cwd) = input["cwd"].as_str() {
@@ -534,6 +554,34 @@ mod tests {
             output.contains("--- stderr ---"),
             "should have labeled stderr separator: {output}"
         );
+    }
+
+    #[test]
+    fn bash_blocks_dangerous_rm_rf() {
+        let result = bash_exec(serde_json::json!({"command": "rm -rf /"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block rm -rf /: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_fork_bomb() {
+        let result = bash_exec(serde_json::json!({"command": ":(){ :|:& };:"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block fork bomb: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_dd_to_device() {
+        let result = bash_exec(serde_json::json!({"command": "dd if=/dev/zero of=/dev/sda"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block dd to device: {err}");
+    }
+
+    #[test]
+    fn bash_allows_safe_commands() {
+        // Ensure the guard doesn't block normal commands
+        let result = bash_exec(serde_json::json!({"command": "echo hello"}));
+        assert!(result.is_ok(), "safe commands should not be blocked");
     }
 
     #[test]

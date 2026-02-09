@@ -33,7 +33,7 @@ src/
   tools/mod.rs    — 5 tools with tools! macro (read, list, bash, edit, search)
 ```
 
-98 tests
+102 tests
 
 ## Dependencies
 
@@ -58,7 +58,7 @@ src/
 
 **CLI**
 - `clap` with derive macros
-- Flags: `--verbose`, `--model` (default: claude-opus-4-6)
+- Flags: `--verbose`, `--model` (default: claude-opus-4-6), `--max-tokens` (default: 16384)
 - Interactive REPL or read from stdin
 
 **HTTP Client**

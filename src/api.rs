@@ -205,9 +205,10 @@ impl AnthropicClient {
         tools: &[Value],
         model: &str,
         system_prompt: &str,
+        max_tokens: u32,
     ) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
         let body = serde_json::json!({
-            "model": model, "max_tokens": 16384, "stream": true,
+            "model": model, "max_tokens": max_tokens, "stream": true,
             "system": system_prompt,
             "messages": messages, "tools": tools
         });

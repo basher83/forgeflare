@@ -150,6 +150,8 @@ struct Cli {
     verbose: bool,
     #[arg(short, long, default_value = "claude-opus-4-6")]
     model: String,
+    #[arg(long, default_value = "16384")]
+    max_tokens: u32,
 }
 
 #[tokio::main]
@@ -221,7 +223,13 @@ async fn main() {
             }
             trim_conversation(&mut conversation, MAX_CONVERSATION_BYTES);
             let (response, stop_reason) = match client
-                .send_message(&conversation, &schemas, &cli.model, &system_prompt)
+                .send_message(
+                    &conversation,
+                    &schemas,
+                    &cli.model,
+                    &system_prompt,
+                    cli.max_tokens,
+                )
                 .await
             {
                 Ok(r) => r,
@@ -272,12 +280,21 @@ async fn main() {
                         eprintln!("{c}tool{r}: {name}");
                     }
                     let result = dispatch_tool(name, input.clone(), id);
-                    if cli.verbose
-                        && let ContentBlock::ToolResult { ref content, .. } = result
+                    if let ContentBlock::ToolResult {
+                        ref content,
+                        ref is_error,
+                        ..
+                    } = result
                     {
-                        let (c, r) = (color("\x1b[92m"), color("\x1b[0m"));
-                        let t: String = content.chars().take(200).collect();
-                        eprintln!("{c}result{r}: {t}");
+                        if cli.verbose {
+                            let (c, r) = (color("\x1b[92m"), color("\x1b[0m"));
+                            let t: String = content.chars().take(200).collect();
+                            eprintln!("{c}result{r}: {t}");
+                        } else if is_error == &Some(true) {
+                            let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
+                            let t: String = content.chars().take(200).collect();
+                            eprintln!("{c}error{r}: {t}");
+                        }
                     }
                     tool_results.push(result);
                 }
