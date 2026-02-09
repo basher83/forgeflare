@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~785 production lines across 3 source files with 93 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by newline when both are non-empty.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~789 production lines across 3 source files with 96 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by newline when both are non-empty. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 93 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 96 unit tests.
 
 File structure:
 - src/main.rs (~300 production lines)
-- src/api.rs (~236 production lines)
-- src/tools/mod.rs (~249 production lines)
-- Total: ~785 production lines
+- src/api.rs (~239 production lines)
+- src/tools/mod.rs (~250 production lines)
+- Total: ~789 production lines
 
 ## Architectural Decisions
 
@@ -136,6 +136,12 @@ match expression for empty/exit input checks. `match t.as_str() { "" => continue
 
 bash stdout/stderr concatenation needs a separator. `format!("{stdout}{stderr}")` merges the last line of stdout with the first line of stderr when both produce output. The Go reference has the same bug. A conditional newline separator (`if !stdout.is_empty() && !stderr.is_empty()`) prevents invisible boundaries between streams while preserving compact output when only one stream is active.
 
+SSE tool_use blocks with empty id or name cause downstream API errors. The `content_block_start` event may contain a tool_use block where `id` or `name` is empty or missing. Using `unwrap_or_default()` silently produces empty strings, and the resulting `ToolResult` with `tool_use_id: ""` gets rejected by the API because no tool_use has that id — triggering `recover_conversation` and silently losing the user's request. The fix validates both fields are present and non-empty before creating a `ToolUse` block; otherwise, a placeholder `Text` block is pushed to maintain index alignment (filtered by `finish()`).
+
+`unwrap()` on `child.stdout.take()` / `child.stderr.take()` violates the no-panics contract for tools. Although `Stdio::piped()` guarantees the handles are `Some`, the `unwrap()` calls are the only panic-path in the entire tool dispatch. Replacing with `.ok_or("...")` makes the invariant explicit and prevents crashes if the piping setup changes.
+
+Thread `join()` with `unwrap_or_default()` silently hides panics in stdout/stderr drain threads. If a thread panics (e.g., OOM during `read_to_string` on a process producing gigabytes of output), the command appears to produce no output with no error. Using `map_err(|_| "...thread panicked")?` surfaces the failure as a tool error instead.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -163,7 +169,7 @@ The specification has been updated to reflect implementation decisions:
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
-- SSE parser now has 14 unit tests covering the full event processing state machine.
+- SSE parser now has 17 unit tests covering the full event processing state machine.
 - Tool dispatch now handles corrupt tool_use blocks with null input by sending error tool_results (maintains API pairing invariant).
 
 ## Verification Checklist
@@ -203,14 +209,17 @@ The specification has been updated to reflect implementation decisions:
 [x] cargo build --release passes
 [x] API error recovery: pop trailing User message + orphaned tool_use to maintain alternation
 [x] SSE trailing buffer: process data without final newline to prevent false incomplete-stream errors
-[x] SSE parser extracted into testable SseParser struct with 14 tests
+[x] SSE parser extracted into testable SseParser struct with 17 tests
 [x] list_files output sorted for deterministic results
 [x] Tool loop iteration limit (50) prevents runaway agent behavior
 [x] Piped stdin reads all input as single prompt (R5)
 [x] NO_COLOR convention respected: all ANSI output suppressed when NO_COLOR env var is set
 [x] Corrupt tool_use blocks (null input) produce error tool_results in dispatch loop
 [x] edit_file enforces 1MB size limit (matches read_file)
-[x] ~785 production lines (300 main.rs + 236 api.rs + 249 tools/mod.rs)
+[x] SSE parser validates non-empty id/name on tool_use blocks (3 new tests)
+[x] bash_exec: unwrap() eliminated on piped handles (ok_or for graceful error)
+[x] bash_exec: thread join panics surfaced as errors (map_err instead of unwrap_or_default)
+[x] ~789 production lines (300 main.rs + 239 api.rs + 250 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt parameter (runtime context injection)
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
@@ -218,4 +227,4 @@ The specification has been updated to reflect implementation decisions:
 [x] list_files output capped at 1000 entries
 [x] search_exec output capped at 100KB (byte-size) in addition to 50-line cap
 [x] bash stdout/stderr separated by newline when both are non-empty
-[x] cargo test passes (93 unit tests)
+[x] cargo test passes (96 unit tests)

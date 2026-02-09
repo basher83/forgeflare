@@ -87,10 +87,13 @@ impl SseParser {
         match self.event.as_str() {
             "content_block_start" => {
                 let b = &p["content_block"];
-                if b["type"].as_str() == Some("tool_use") {
+                if b["type"].as_str() == Some("tool_use")
+                    && let Some(id) = b["id"].as_str().filter(|s| !s.is_empty())
+                    && let Some(name) = b["name"].as_str().filter(|s| !s.is_empty())
+                {
                     self.blocks.push(ContentBlock::ToolUse {
-                        id: b["id"].as_str().unwrap_or_default().into(),
-                        name: b["name"].as_str().unwrap_or_default().into(),
+                        id: id.into(),
+                        name: name.into(),
                         input: Value::Null,
                     });
                 } else {
@@ -687,5 +690,59 @@ mod tests {
             .unwrap();
         let (_, stop) = parser.finish().unwrap();
         assert_eq!(stop, StopReason::EndTurn);
+    }
+
+    #[test]
+    fn sse_tool_use_empty_id_filtered() {
+        // A tool_use block with empty id should be treated as corrupt and filtered out
+        let (blocks, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"","name":"bash"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"fallback"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "fallback"));
+    }
+
+    #[test]
+    fn sse_tool_use_empty_name_filtered() {
+        // A tool_use block with empty name should be treated as corrupt and filtered out
+        let (blocks, _) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":""}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        // Empty-name tool_use becomes placeholder text (empty), which is filtered
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn sse_tool_use_missing_id_filtered() {
+        // A tool_use block with no id field should be treated as corrupt
+        let (blocks, _) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"bash"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        assert!(blocks.is_empty());
     }
 }

@@ -138,8 +138,9 @@ fn bash_exec(input: Value) -> Result<String, String> {
             s
         })
     }
-    let out_h = drain(child.stdout.take().unwrap());
-    let err_h = drain(child.stderr.take().unwrap());
+    let out_h = drain(child.stdout.take().ok_or("failed to capture stdout")?);
+    let err_h = drain(child.stderr.take().ok_or("failed to capture stderr")?);
+
     let status = match child
         .wait_timeout(BASH_TIMEOUT)
         .map_err(|e| format!("wait: {e}"))?
@@ -151,8 +152,8 @@ fn bash_exec(input: Value) -> Result<String, String> {
             return Err("Command timed out after 120s and was killed".into());
         }
     };
-    let stdout = out_h.join().unwrap_or_default();
-    let stderr = err_h.join().unwrap_or_default();
+    let stdout = out_h.join().map_err(|_| "stdout reader thread panicked")?;
+    let stderr = err_h.join().map_err(|_| "stderr reader thread panicked")?;
     let mut output = if !stdout.is_empty() && !stderr.is_empty() {
         format!("{stdout}\n{stderr}")
     } else {
