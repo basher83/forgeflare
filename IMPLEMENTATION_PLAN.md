@@ -2,7 +2,7 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~876 production lines across 3 source files with 117 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 117 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
@@ -14,9 +14,9 @@ Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, 
 
 File structure:
 - src/main.rs (~321 production lines)
-- src/api.rs (~255 production lines)
-- src/tools/mod.rs (~300 production lines)
-- Total: ~876 production lines
+- src/api.rs (~254 production lines)
+- src/tools/mod.rs (~304 production lines)
+- Total: ~879 production lines
 
 ## Architectural Decisions
 
@@ -162,6 +162,8 @@ Bash command guard device coverage must span all common device families. Initial
 
 Tool schema descriptions must match the actual skip directory list. The `list_files` schema said "Skips .git, node_modules, target, .venv, vendor" but `SKIP_DIRS` also includes `.devenv`. The model could make decisions based on the schema description alone, leading to confusion when `.devenv` directories are unexpectedly filtered. Schema descriptions are a contract with the model.
 
+Production line count reduction requires rustfmt-aware refactoring. rustfmt expands compressed `format!` calls and method chains beyond ~90 characters. Safe approaches: inlining temporary variables into `ok_or_else` closures, combining doc comment lines, eliminating intermediate String allocations (`push_str(&format!(...))` → direct `format!`). Unsafe approaches: single-line `format!` calls with positional args (rustfmt splits), `.then()` chains (rustfmt expands).
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -241,4 +243,4 @@ The specification has been updated to reflect implementation decisions:
 [x] search_exec: 50-line cap applied before 100KB byte cap
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~876 production lines (321 main.rs + 255 api.rs + 300 tools/mod.rs)
+[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs)

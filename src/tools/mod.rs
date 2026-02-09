@@ -7,8 +7,7 @@ const BASH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_READ_SIZE: u64 = 1024 * 1024; // 1MB
 const MAX_BASH_OUTPUT: usize = 100 * 1024; // 100KB
 
-/// Destructive bash patterns blocked before execution (defense-in-depth).
-/// Covers combined flags, separate flags, and long-form flag orderings.
+/// Destructive bash patterns blocked before execution (combined, separate, and long-form flags).
 const BLOCKED_PATTERNS: &[&str] = &[
     "rm -rf /",
     "rm -rf ~",
@@ -100,11 +99,10 @@ fn list_exec(input: Value) -> Result<String, String> {
     let total = files.len();
     if total > MAX_LIST_ENTRIES {
         files.truncate(MAX_LIST_ENTRIES);
-        let mut out = serde_json::to_string(&files).map_err(|e| e.to_string())?;
-        out.push_str(&format!(
-            "\n... (showing {MAX_LIST_ENTRIES} of {total} entries)"
+        let out = serde_json::to_string(&files).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "{out}\n... (showing {MAX_LIST_ENTRIES} of {total} entries)"
         ));
-        return Ok(out);
     }
     serde_json::to_string(&files).map_err(|e| e.to_string())
 }

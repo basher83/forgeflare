@@ -175,11 +175,10 @@ impl SseParser {
     fn finish(mut self) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
         self.blocks
             .retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
-        let no_stop = AgentError::StreamParse("stream ended without stop_reason".into());
         let stop = self
             .stop_reason
             .or(self.message_complete.then_some(StopReason::EndTurn))
-            .ok_or(no_stop)?;
+            .ok_or_else(|| AgentError::StreamParse("stream ended without stop_reason".into()))?;
         Ok((self.blocks, stop))
     }
 }
