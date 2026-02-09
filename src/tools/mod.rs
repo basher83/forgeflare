@@ -25,7 +25,12 @@ const BLOCKED_PATTERNS: &[&str] = &[
     "mkfs.",
     "of=/dev/sd",
     "of=/dev/nvme",
+    "of=/dev/vd",
+    "of=/dev/hd",
     "> /dev/sd",
+    "> /dev/nvme",
+    "> /dev/vd",
+    "> /dev/hd",
     "chmod -r 777 /",
     "chmod 777 /",
     ":(){ :|:& };:",
@@ -50,7 +55,7 @@ tools! {
     "read_file", "Read file contents with line numbers. 1MB size limit. Detects binary files. Use before editing — never edit without reading first.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Relative file path"}}, "required": ["path"]}),
     read_exec;
-    "list_files", "List files and directories. Defaults to current directory, non-recursive. Skips .git, node_modules, target, .venv, vendor. 1000 entry cap.",
+    "list_files", "List files and directories. Defaults to current directory, non-recursive. Skips .git, .devenv, node_modules, target, .venv, vendor. 1000 entry cap.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []}),
     list_exec;
     "bash", "Execute a bash command. 120s timeout, 100KB output cap. Non-zero exit = error. Each call is a fresh shell — use cwd param or absolute paths.",
@@ -196,8 +201,9 @@ fn bash_exec(input: Value) -> Result<String, String> {
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            drop(out_h.join()); // join drain threads to prevent resource leak
-            drop(err_h.join());
+            // Join drain threads to prevent resource leak; panics are secondary to timeout
+            let _ = out_h.join();
+            let _ = err_h.join();
             return Err("Command timed out after 120s and was killed".into());
         }
     };
@@ -486,7 +492,7 @@ mod tests {
     #[test]
     fn list_excludes_skip_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        for skip in &["node_modules", "target", ".venv", "vendor"] {
+        for skip in &["node_modules", "target", ".venv", "vendor", ".devenv"] {
             fs::create_dir(dir.path().join(skip)).unwrap();
         }
         fs::write(dir.path().join("keep.txt"), "").unwrap();
@@ -668,6 +674,46 @@ mod tests {
         assert!(
             err.contains("blocked"),
             "should block rm<tab>-rf<tab>/: {err}"
+        );
+    }
+
+    #[test]
+    fn bash_blocks_dd_to_virtual_devices() {
+        // dd to virtual disk devices (KVM/QEMU /dev/vd*, legacy IDE /dev/hd*)
+        let result = bash_exec(serde_json::json!({"command": "dd if=/dev/zero of=/dev/vda"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block dd to /dev/vd: {err}");
+
+        let result = bash_exec(serde_json::json!({"command": "dd if=/dev/zero of=/dev/hda1"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block dd to /dev/hd: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_redirect_to_nvme_device() {
+        // Redirect to NVMe device — previously only /dev/sd was covered
+        let result = bash_exec(serde_json::json!({"command": "echo x > /dev/nvme0n1"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block redirect to /dev/nvme: {err}"
+        );
+    }
+
+    #[test]
+    fn bash_blocks_redirect_to_virtual_devices() {
+        let result = bash_exec(serde_json::json!({"command": "cat /dev/zero > /dev/vda"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block redirect to /dev/vd: {err}"
+        );
+
+        let result = bash_exec(serde_json::json!({"command": "echo > /dev/hda"}));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("blocked"),
+            "should block redirect to /dev/hd: {err}"
         );
     }
 

@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~876 production lines across 3 source files with 114 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~876 production lines across 3 source files with 117 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
-Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bombs, dd to block devices, mkfs, chmod 777) with whitespace normalization and expanded flag ordering coverage. Timeout drain thread leak fixed. walk() has depth limit (MAX_WALK_DEPTH=20) and skips permission-denied entries. SSE parser validates tool_use blocks have non-empty id/name fields. search_exec applies 50-line cap before 100KB byte cap.
+Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bombs, dd to block devices including /dev/sd, /dev/nvme, /dev/vd, /dev/hd, mkfs, chmod 777) with whitespace normalization and expanded flag ordering coverage. Redirect-to-device patterns cover all four device families. Timeout drain thread leak fixed. walk() has depth limit (MAX_WALK_DEPTH=20) and skips permission-denied entries. SSE parser validates tool_use blocks have non-empty id/name fields. search_exec applies 50-line cap before 100KB byte cap.
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 114 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 117 unit tests.
 
 File structure:
 - src/main.rs (~321 production lines)
@@ -158,6 +158,10 @@ edit_file schema description was missing the 1MB size limit that other tools inc
 
 Retry-After header on 429 responses surfaces actionable info. Extracting and displaying this header value gives users the wait time instead of a generic 429 error.
 
+Bash command guard device coverage must span all common device families. Initially only `/dev/sd` and `/dev/nvme` were covered for `dd of=` patterns, and only `/dev/sd` for redirect (`>`). Virtual disk devices (`/dev/vd` for KVM/QEMU) and legacy IDE devices (`/dev/hd`) are equally destructive targets. Redirect patterns must mirror `dd of=` coverage to prevent shell redirect bypasses.
+
+Tool schema descriptions must match the actual skip directory list. The `list_files` schema said "Skips .git, node_modules, target, .venv, vendor" but `SKIP_DIRS` also includes `.devenv`. The model could make decisions based on the schema description alone, leading to confusion when `.devenv` directories are unexpectedly filtered. Schema descriptions are a contract with the model.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -189,6 +193,8 @@ The specification has been updated to reflect implementation decisions:
 - SSE parser now has 17 unit tests covering the full event processing state machine.
 - Tool dispatch handles corrupt tool_use blocks with null input by sending error tool_results.
 - Implementation Notes expanded with conversation trimming, dynamic system prompt, NO_COLOR, reqwest timeouts, bash command guard, API error recovery, tool loop iteration limit.
+- Bash command guard expanded: redirect-to-device patterns (`> /dev/nvme`, `> /dev/vd`, `> /dev/hd`) and dd-to-device patterns (`of=/dev/vd`, `of=/dev/hd`) cover all common device families.
+- list_files schema description updated to include `.devenv` to match SKIP_DIRS constant.
 
 ## Verification Checklist
 
@@ -210,7 +216,7 @@ The specification has been updated to reflect implementation decisions:
 [x] edit_file: 1MB size limit, schema documents create/append mode for empty old_str
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (114 unit tests)
+[x] cargo fmt/clippy/build/test passes (117 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -221,7 +227,7 @@ The specification has been updated to reflect implementation decisions:
 [x] bash_exec: unwrap() eliminated, thread panics surfaced as errors
 [x] walk() depth limit (MAX_WALK_DEPTH=20), permission-denied entries skipped
 [x] bash stdout/stderr labeled separator ('--- stderr ---')
-[x] Bash command guard: deny-list blocks rm -rf, fork bombs, dd-to-device, mkfs, chmod 777
+[x] Bash command guard: deny-list blocks rm -rf, fork bombs, dd-to-device (sd/nvme/vd/hd), mkfs, chmod 777
 [x] Bash command guard: expanded flag orderings (rm -r -f, --recursive --force, chmod 777 /)
 [x] Bash command guard: whitespace normalization
 [x] Bash timeout: drain threads joined on timeout path
@@ -233,4 +239,6 @@ The specification has been updated to reflect implementation decisions:
 [x] send_message accepts system_prompt and max_tokens parameters
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
 [x] search_exec: 50-line cap applied before 100KB byte cap
+[x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
+[x] list_files schema description includes .devenv in skip list
 [x] ~876 production lines (321 main.rs + 255 api.rs + 300 tools/mod.rs)
