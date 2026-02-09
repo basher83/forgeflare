@@ -1,4 +1,21 @@
 {
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:mise.jdx.dev)",
+      "Bash(xargs:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(git -C /workspaces/forgeflare log --oneline -10)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git -C /workspaces/forgeflare status:*)",
+      "Bash(git -C /workspaces/forgeflare diff)",
+      "Bash(git -C /workspaces/forgeflare add specs/README.md)",
+      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nstyle: align table column separator in specs README\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /workspaces/forgeflare add:*)",
+      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\ndocs: add CLAUDE.md symlink to AGENTS.md\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /workspaces/forgeflare commit -m \"$\\(cat <<''EOF''\nchore: update local Claude permission allowlist\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
