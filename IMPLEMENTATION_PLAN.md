@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~757 production lines across 3 source files with 88 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with tool behavioral guidance and safety rules. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~779 production lines across 3 source files with 88 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit.
 
 Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 88 unit tests.
 
 File structure:
-- src/main.rs (~278 production lines)
+- src/main.rs (~300 production lines)
 - src/api.rs (~236 production lines)
 - src/tools/mod.rs (~243 production lines)
-- Total: ~757 production lines
+- Total: ~779 production lines
 
 ## Architectural Decisions
 
@@ -124,6 +124,10 @@ Production line count was documented as ~685 but the actual #[cfg(test)] boundar
 
 `send_message` system_prompt parameter is cleaner than embedding the prompt in api.rs. The API module should not know about runtime context (cwd, platform). Passing the prompt as a parameter follows information hiding — the caller assembles context, the API module transmits it.
 
+System prompt structure matters for agent effectiveness. Tool-per-section layout with explicit when-to-use guidance, error recovery hints (e.g. 'On not found: re-read the file'), and anti-patterns (e.g. 'Never edit blind') gives the model actionable decision-making context at every step. The previous flat format (~400 chars) was functional but missed opportunities to prevent common failure modes like editing without reading, retrying without analysis, and choosing bash over purpose-built tools.
+
+bash cwd parameter doesn't persist between calls — each invocation is a fresh shell. Documenting this in the system prompt prevents a common misconception where the model chains cd + command across separate bash calls expecting state to persist.
+
 reqwest .json() automatically sets Content-Type: application/json — the explicit header was redundant.
 
 flat_map on nested iteration. `conversation.iter_mut().flat_map(|m| &mut m.content)` eliminates the inner `for block in &mut msg.content` loop and its closing brace.
@@ -204,7 +208,7 @@ The specification has been updated to reflect implementation decisions:
 [x] NO_COLOR convention respected: all ANSI output suppressed when NO_COLOR env var is set
 [x] Corrupt tool_use blocks (null input) produce error tool_results in dispatch loop
 [x] edit_file enforces 1MB size limit (matches read_file)
-[x] ~757 production lines (278 main.rs + 236 api.rs + 243 tools/mod.rs)
+[x] ~779 production lines (300 main.rs + 236 api.rs + 243 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt parameter (runtime context injection)
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
