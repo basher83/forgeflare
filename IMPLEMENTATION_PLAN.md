@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~846 production lines across 3 source files with 106 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model`, `--max-tokens` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging. bash command guard deny-list blocks dangerous patterns (rm -rf /, fork bombs, dd to block devices) before execution. Tool error display in non-verbose mode shows is_error results with 200-char truncation.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~847 production lines across 3 source files with 107 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model`, `--max-tokens` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec applies 50-line cap before 100KB byte cap (prevents line-count bypass on large output). bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging. bash command guard deny-list blocks dangerous patterns (rm -rf /, fork bombs, dd to block devices) before execution. Tool error display in non-verbose mode shows is_error results with 200-char truncation.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 106 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 107 unit tests.
 
 File structure:
 - src/main.rs (~317 production lines)
 - src/api.rs (~248 production lines)
-- src/tools/mod.rs (~281 production lines)
-- Total: ~846 production lines
+- src/tools/mod.rs (~282 production lines)
+- Total: ~847 production lines
 
 ## Architectural Decisions
 
@@ -156,6 +156,8 @@ Tool error display in non-verbose mode improves UX without flooding output. The 
 
 Test coverage audit revealed untested blocked patterns (chmod 777 /, mkfs), edit_file text deletion, and invalid regex handling for code_search. These edge cases are straightforward but worth testing because they exercise different code paths in the command guard and error handling.
 
+search_exec truncation order was wrong: byte-size cap before line-count cap. When rg produced output exceeding 100KB but under the 50-line limit, `truncate_with_marker` returned early, skipping the line-count check entirely. This meant a query producing 200 lines of 1KB each (200KB total) would be byte-truncated to ~100KB (~100 lines) instead of line-truncated to 50 lines. Fixed by applying the 50-line cap first, then the byte cap as a safety net. The byte cap now only fires when 50 very long lines still exceed 100KB.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -181,7 +183,7 @@ The specification has been updated to reflect implementation decisions:
 - `send_message` signature extended with `system_prompt: &str` parameter.
 - Line target updated from <700 to <800 to accommodate dynamic system prompt, HTTP timeouts, and output caps (justified trade-offs: operational safety and tool robustness).
 - Line target updated from <800 to <850 to accommodate walk depth limit, OOB logging, and labeled stderr separator (justified trade-offs: stack safety, model accuracy, debuggability).
-- Current 846 line count is within the <850 budget. Recent additions: bash command guard (deny-list enforcement), tool error display in non-verbose mode, --max-tokens CLI parameter.
+- Current 847 line count is within the <850 budget. Recent additions: search_exec truncation order fix (line cap before byte cap).
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
@@ -248,12 +250,12 @@ The specification has been updated to reflect implementation decisions:
 [x] Tool errors displayed in non-verbose mode (is_error results shown with 200-char truncation)
 [x] --max-tokens CLI flag (default 16384, flows through to API)
 [x] specs/README.md line count corrected (<700 → <850)
-[x] ~846 production lines (317 main.rs + 248 api.rs + 281 tools/mod.rs)
+[x] ~847 production lines (317 main.rs + 248 api.rs + 282 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt and max_tokens parameters (runtime context injection)
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
 [x] response.clone() eliminated — response moved into conversation, iterated via last()
 [x] list_files output capped at 1000 entries
-[x] search_exec output capped at 100KB (byte-size) in addition to 50-line cap
+[x] search_exec: 50-line cap applied before 100KB byte cap (prevents line-count bypass)
 [x] bash stdout/stderr separated by newline when both are non-empty
-[x] cargo test passes (106 unit tests)
+[x] cargo test passes (107 unit tests)

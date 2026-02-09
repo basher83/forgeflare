@@ -93,7 +93,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <850 production lines (846 actual: 317 main.rs + 248 api.rs + 281 tools/mod.rs)
+- [x] <850 production lines (847 actual: 317 main.rs + 248 api.rs + 282 tools/mod.rs)
 - [x] Streaming responses visible to user in real-time
 
 ---

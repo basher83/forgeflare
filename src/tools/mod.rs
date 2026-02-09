@@ -266,17 +266,18 @@ fn search_exec(input: Value) -> Result<String, String> {
         return Err(format!("search failed: {err}"));
     }
     let mut result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let lines: Vec<&str> = result.lines().collect();
+    if lines.len() > 50 {
+        let total = lines.len();
+        result = format!(
+            "{}\n... (showing 50 of {total} matches)",
+            lines[..50].join("\n")
+        );
+    }
     if result.len() > MAX_BASH_OUTPUT {
         truncate_with_marker(&mut result, MAX_BASH_OUTPUT);
-        return Ok(result);
     }
-    let lines: Vec<&str> = result.lines().collect();
-    if lines.len() <= 50 {
-        return Ok(result);
-    }
-    let shown = lines[..50].join("\n");
-    let total = lines.len();
-    Ok(format!("{shown}\n... (showing 50 of {total} matches)"))
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -911,6 +912,27 @@ mod tests {
         assert!(
             output.contains("showing 50 of"),
             "should indicate truncation: {output}"
+        );
+    }
+
+    #[test]
+    fn search_line_cap_applied_before_byte_cap() {
+        // Even when total output exceeds MAX_BASH_OUTPUT, the 50-line cap must apply first.
+        // Previously, byte truncation returned early and skipped the line-count check.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.txt");
+        // 200 lines, each 1KB — total ~200KB (exceeds 100KB byte cap)
+        let content: String = (0..200)
+            .map(|i| format!("hit{i} {}\n", "x".repeat(1000)))
+            .collect();
+        fs::write(&path, &content).unwrap();
+        let result = search_exec(
+            serde_json::json!({"pattern": "hit", "path": dir.path().to_str().unwrap()}),
+        );
+        let output = result.unwrap();
+        assert!(
+            output.contains("showing 50 of"),
+            "line cap should apply before byte cap: {output}"
         );
     }
 
