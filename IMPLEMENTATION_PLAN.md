@@ -2,15 +2,15 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~789 production lines across 3 source files with 96 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by newline when both are non-empty. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~808 production lines across 3 source files with 98 unit tests. SSE streaming works from day one with explicit `stop_reason` parsing per R7, unknown block type handling, mid-stream error detection, incomplete stream detection, and truncation cleanup. CLI supports `--verbose`, `--model` flags, and stdin pipe detection per R5. Piped stdin reads all input as a single prompt instead of line-by-line. Conversation context management with truncation safety valve prevents unbounded growth. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention (https://no-color.org/). System prompt is dynamically built at startup, injecting cwd and platform info, with structured tool-per-section layout and explicit when-to-use guidance, error recovery hints, and anti-patterns. reqwest client has explicit timeouts (connect 30s, request 300s) to prevent indefinite hangs. response.clone() was eliminated from main loop — response is moved into conversation, then iterated via last(). list_files output capped at 1000 entries. search_exec (bash) output has 100KB byte-size cap in addition to 50-line limit. bash stdout/stderr separated by labeled separator ('--- stderr ---') so the model can distinguish between streams. SSE parser validates tool_use blocks have non-empty id/name fields — empty values produce placeholder blocks that are filtered, preventing downstream API errors. bash_exec uses ok_or instead of unwrap for piped handles and map_err on thread joins to eliminate panic paths in tool dispatch. walk() has depth-limited recursion (MAX_WALK_DEPTH=20) to prevent stack overflow on deep/symlinked trees. SSE parser logs OOB content_block_stop indices for debugging.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 96 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 98 unit tests.
 
 File structure:
 - src/main.rs (~300 production lines)
-- src/api.rs (~239 production lines)
-- src/tools/mod.rs (~250 production lines)
-- Total: ~789 production lines
+- src/api.rs (~247 production lines)
+- src/tools/mod.rs (~261 production lines)
+- Total: ~808 production lines
 
 ## Architectural Decisions
 
@@ -142,6 +142,12 @@ SSE tool_use blocks with empty id or name cause downstream API errors. The `cont
 
 Thread `join()` with `unwrap_or_default()` silently hides panics in stdout/stderr drain threads. If a thread panics (e.g., OOM during `read_to_string` on a process producing gigabytes of output), the command appears to produce no output with no error. Using `map_err(|_| "...thread panicked")?` surfaces the failure as a tool error instead.
 
+Unbounded recursion in walk() risks stack overflow on deep directory trees or symlink loops. entry.file_type() does not follow symlinks on most Unix platforms, but a depth limit (MAX_WALK_DEPTH=20) is a simple safety net that prevents pathological cases without restricting normal usage.
+
+Labeled stdout/stderr separator helps the model distinguish between streams. A bare newline separator between stdout and stderr is invisible — the model cannot tell where stdout ends and stderr begins. Using `--- stderr ---` as a structural marker makes the boundary unambiguous.
+
+OOB index on content_block_stop silently drops tool input. When the SSE stream sends a content_block_stop with an index that doesn't match any block, the JSON fragments accumulated for that tool_use block are never assembled. The tool_use retains Value::Null input, which surfaces as 'corrupt input' far from the actual cause. Logging the OOB index at the point of occurrence makes debugging much easier.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -166,6 +172,7 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from static string to dynamic `build_system_prompt()` with cwd, platform injection and structured tool/safety guidance.
 - `send_message` signature extended with `system_prompt: &str` parameter.
 - Line target updated from <700 to <800 to accommodate dynamic system prompt, HTTP timeouts, and output caps (justified trade-offs: operational safety and tool robustness).
+- Line target updated from <800 to <850 to accommodate walk depth limit, OOB logging, and labeled stderr separator (justified trade-offs: stack safety, model accuracy, debuggability).
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
@@ -219,7 +226,10 @@ The specification has been updated to reflect implementation decisions:
 [x] SSE parser validates non-empty id/name on tool_use blocks (3 new tests)
 [x] bash_exec: unwrap() eliminated on piped handles (ok_or for graceful error)
 [x] bash_exec: thread join panics surfaced as errors (map_err instead of unwrap_or_default)
-[x] ~789 production lines (300 main.rs + 239 api.rs + 250 tools/mod.rs)
+[x] walk() depth limit (MAX_WALK_DEPTH=20) prevents stack overflow on deep trees
+[x] bash stdout/stderr labeled separator ('--- stderr ---') for model disambiguation
+[x] SSE content_block_stop OOB index warning logged for debugging
+[x] ~808 production lines (300 main.rs + 247 api.rs + 261 tools/mod.rs)
 [x] Dynamic system prompt: cwd, platform, tool guidance, safety rules
 [x] send_message accepts system_prompt parameter (runtime context injection)
 [x] reqwest client: connect_timeout (30s) and request timeout (300s)
@@ -227,4 +237,4 @@ The specification has been updated to reflect implementation decisions:
 [x] list_files output capped at 1000 entries
 [x] search_exec output capped at 100KB (byte-size) in addition to 50-line cap
 [x] bash stdout/stderr separated by newline when both are non-empty
-[x] cargo test passes (96 unit tests)
+[x] cargo test passes (98 unit tests)

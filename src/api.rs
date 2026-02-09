@@ -131,6 +131,14 @@ impl SseParser {
                 let Some(idx) = p["index"].as_u64().map(|i| i as usize) else {
                     return Ok(());
                 };
+                if idx >= self.blocks.len() {
+                    let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
+                    eprintln!(
+                        "{c}[warning]{r} content_block_stop index {idx} out of bounds (have {} blocks)",
+                        self.blocks.len()
+                    );
+                    return Ok(());
+                }
                 if let Some(ContentBlock::ToolUse { input, .. }) = self.blocks.get_mut(idx)
                     && let Some(f) = self.fragments.get(idx).filter(|f| !f.is_empty())
                 {
@@ -744,5 +752,35 @@ mod tests {
         ])
         .unwrap();
         assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn sse_content_block_stop_oob_index_safe() {
+        // content_block_stop with an out-of-bounds index should not panic or corrupt data
+        let (blocks, stop) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}"#,
+            // Stop event with wrong index — should warn but not crash
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":99}"#,
+            // Correct stop event
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::ToolUse);
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::ToolUse { input, .. } = &blocks[0] {
+            assert_eq!(
+                input["command"], "ls",
+                "correct stop should still assemble input"
+            );
+        } else {
+            panic!("expected ToolUse");
+        }
     }
 }

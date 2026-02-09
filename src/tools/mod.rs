@@ -66,7 +66,7 @@ fn list_exec(input: Value) -> Result<String, String> {
     let dir = input["path"].as_str().unwrap_or(".");
     let recursive = input["recursive"].as_bool().unwrap_or(false);
     let mut files = Vec::new();
-    walk(Path::new(dir), Path::new(dir), &mut files, recursive).map_err(|e| e.to_string())?;
+    walk(Path::new(dir), Path::new(dir), &mut files, recursive, 0).map_err(|e| e.to_string())?;
     files.sort();
     let total = files.len();
     if total > MAX_LIST_ENTRIES {
@@ -89,7 +89,18 @@ const SKIP_DIRS: &[&str] = &[
     "vendor",
 ];
 
-fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> std::io::Result<()> {
+const MAX_WALK_DEPTH: usize = 20;
+
+fn walk(
+    base: &Path,
+    dir: &Path,
+    files: &mut Vec<String>,
+    recursive: bool,
+    depth: usize,
+) -> std::io::Result<()> {
+    if depth > MAX_WALK_DEPTH {
+        return Ok(());
+    }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -101,7 +112,7 @@ fn walk(base: &Path, dir: &Path, files: &mut Vec<String>, recursive: bool) -> st
             }
             files.push(format!("{rel}/"));
             if recursive {
-                walk(base, &path, files, recursive)?;
+                walk(base, &path, files, recursive, depth + 1)?;
             }
         } else {
             files.push(rel.into_owned());
@@ -155,7 +166,7 @@ fn bash_exec(input: Value) -> Result<String, String> {
     let stdout = out_h.join().map_err(|_| "stdout reader thread panicked")?;
     let stderr = err_h.join().map_err(|_| "stderr reader thread panicked")?;
     let mut output = if !stdout.is_empty() && !stderr.is_empty() {
-        format!("{stdout}\n{stderr}")
+        format!("{stdout}\n--- stderr ---\n{stderr}")
     } else {
         format!("{stdout}{stderr}")
     }
@@ -452,6 +463,31 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn walk_respects_depth_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a directory tree deeper than MAX_WALK_DEPTH (20)
+        let mut path = dir.path().to_path_buf();
+        for i in 0..25 {
+            path = path.join(format!("d{i}"));
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("file.txt"), "").unwrap();
+        }
+        let result =
+            list_exec(serde_json::json!({"path": dir.path().to_str().unwrap(), "recursive": true}));
+        let files: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        // Files at depth 25 should NOT appear (limit is 20)
+        assert!(
+            !files.iter().any(|f| f.contains("d24/file.txt")),
+            "files beyond depth limit should be excluded"
+        );
+        // Files at depth 1 should appear
+        assert!(
+            files.iter().any(|f| f.contains("d0/file.txt")),
+            "files within depth limit should be present"
+        );
+    }
+
     // --- bash tests ---
 
     #[test]
@@ -489,16 +525,14 @@ mod tests {
 
     #[test]
     fn bash_stdout_stderr_separated() {
-        // When both stdout and stderr have content, they should be separated by a newline
+        // When both stdout and stderr have content, they should be labeled and separated
         let result = bash_exec(serde_json::json!({"command": "echo out; echo err >&2"}));
         let output = result.unwrap();
         assert!(output.contains("out"), "should contain stdout");
         assert!(output.contains("err"), "should contain stderr");
-        // The two should not be concatenated on the same line
-        let lines: Vec<&str> = output.lines().collect();
         assert!(
-            lines.len() >= 2,
-            "stdout and stderr should be on separate lines: {output}"
+            output.contains("--- stderr ---"),
+            "should have labeled stderr separator: {output}"
         );
     }
 
