@@ -2,7 +2,7 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 117 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~877 production lines across 3 source files with 119 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
@@ -10,13 +10,13 @@ Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bomb
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 117 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 119 unit tests.
 
 File structure:
 - src/main.rs (~321 production lines)
 - src/api.rs (~254 production lines)
-- src/tools/mod.rs (~304 production lines)
-- Total: ~879 production lines
+- src/tools/mod.rs (~302 production lines)
+- Total: ~877 production lines
 
 ## Architectural Decisions
 
@@ -164,6 +164,10 @@ Tool schema descriptions must match the actual skip directory list. The `list_fi
 
 Production line count reduction requires rustfmt-aware refactoring. rustfmt expands compressed `format!` calls and method chains beyond ~90 characters. Safe approaches: inlining temporary variables into `ok_or_else` closures, combining doc comment lines, eliminating intermediate String allocations (`push_str(&format!(...))` → direct `format!`). Unsafe approaches: single-line `format!` calls with positional args (rustfmt splits), `.then()` chains (rustfmt expands).
 
+Bash drain threads must read bounded data. The original `drain` helper used `read_to_string` with no size cap, meaning a command producing 500MB of stdout would allocate 500MB in the drain thread before the 100KB post-join truncation fired. Fixed by using `Read::take((MAX_BASH_OUTPUT + 1) as u64)` to cap the read, then `into_inner()` + `io::copy` to `sink()` to drain the remaining pipe data so the child process isn't blocked. The +1 allows the post-join truncation logic to detect overflow.
+
+`str::floor_char_boundary(n)` (stable since Rust 1.82) replaces the manual reverse-scan pattern `(0..=n).rev().find(|&i| s.is_char_boundary(i))`. Cleaner and saves 3 lines.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -188,8 +192,10 @@ The specification has been updated to reflect implementation decisions:
 - System prompt upgraded from static string to dynamic `build_system_prompt()` with cwd, platform injection and structured tool/safety guidance.
 - `send_message` signature extended with `system_prompt: &str` parameter.
 - specs/README.md line count corrected (<870 → <880) to match coding-agent.md.
-- Production line counting: main.rs 321 + api.rs 255 + tools/mod.rs 300 = 876 total.
+- Production line counting: main.rs 321 + api.rs 254 + tools/mod.rs 302 = 877 total.
 - Production line counting standardized: all lines before #[cfg(test)] in each source file.
+- Bash drain threads bounded via Read::take() to prevent OOM on large command output.
+- truncate_with_marker uses str::floor_char_boundary (Rust 1.82+) instead of manual reverse scan.
 - Tool descriptions enriched to match Go reference quality with usage guidance.
 - max_tokens increased from 8192 to 16384 for better Opus performance (API supports up to 128K).
 - SSE parser now has 17 unit tests covering the full event processing state machine.
@@ -218,7 +224,7 @@ The specification has been updated to reflect implementation decisions:
 [x] edit_file: 1MB size limit, schema documents create/append mode for empty old_str
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (117 unit tests)
+[x] cargo fmt/clippy/build/test passes (119 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -233,6 +239,7 @@ The specification has been updated to reflect implementation decisions:
 [x] Bash command guard: expanded flag orderings (rm -r -f, --recursive --force, chmod 777 /)
 [x] Bash command guard: whitespace normalization
 [x] Bash timeout: drain threads joined on timeout path
+[x] Bash drain threads bounded: Read::take() caps memory at ~100KB per stream
 [x] Tool errors displayed in non-verbose mode (200-char truncation)
 [x] Tool result visibility in non-verbose mode (shows result size)
 [x] Tool schema descriptions enriched with operational limits
@@ -243,4 +250,4 @@ The specification has been updated to reflect implementation decisions:
 [x] search_exec: 50-line cap applied before 100KB byte cap
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs)
+[x] ~877 production lines (321 main.rs + 254 api.rs + 302 tools/mod.rs)
