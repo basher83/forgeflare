@@ -185,10 +185,10 @@ fn bash_exec(input: Value) -> Result<String, String> {
     fn drain<R: Read + Send + 'static>(r: R) -> std::thread::JoinHandle<String> {
         std::thread::spawn(move || {
             let mut limited = r.take((MAX_BASH_OUTPUT + 1) as u64);
-            let mut s = String::new();
-            let _ = limited.read_to_string(&mut s);
+            let mut buf = Vec::new();
+            let _ = limited.read_to_end(&mut buf);
             std::io::copy(&mut limited.into_inner(), &mut std::io::sink()).ok();
-            s
+            String::from_utf8_lossy(&buf).into_owned()
         })
     }
     let out_h = drain(child.stdout.take().ok_or("failed to capture stdout")?);
@@ -1173,6 +1173,28 @@ mod tests {
         assert!(
             err.contains("Command failed") || err.contains("signal"),
             "should report failure: {err}"
+        );
+    }
+
+    #[test]
+    fn bash_non_utf8_output_preserved() {
+        // Regression: read_to_string silently discards data after the first invalid
+        // UTF-8 byte. Commands that emit non-UTF-8 output (binary tools, locale issues)
+        // would produce silently truncated results. The fix uses from_utf8_lossy which
+        // replaces invalid bytes with the Unicode replacement character.
+        let result = bash_exec(serde_json::json!({"command": "printf 'before\\x80\\xFFafter'"}));
+        let output = result.unwrap();
+        assert!(
+            output.contains("before"),
+            "text before invalid bytes should be present: {output}"
+        );
+        assert!(
+            output.contains("after"),
+            "text after invalid bytes should be preserved (not silently lost): {output}"
+        );
+        assert!(
+            output.contains('\u{FFFD}'),
+            "invalid bytes should be replaced with U+FFFD: {output}"
         );
     }
 }

@@ -133,9 +133,7 @@ fn truncate_oversized_blocks(conversation: &mut [Message], max_bytes: usize) {
         };
         if text.len() > 10_000 {
             let keep = text.len().saturating_sub(remaining).max(1_000);
-            let end = (keep..text.len())
-                .find(|&i| text.is_char_boundary(i))
-                .unwrap_or(keep);
+            let end = text.floor_char_boundary(keep);
             remaining = remaining.saturating_sub(text.len() - end);
             text.truncate(end);
             text.push_str("\n... (truncated to fit context window)");
@@ -541,6 +539,28 @@ mod tests {
         assert!(
             matches!(&conv[0].content[0], ContentBlock::Text { text } if text == "small text that should not be truncated")
         );
+    }
+
+    #[test]
+    fn truncate_oversized_multibyte_char_boundary() {
+        // Regression: truncate_oversized_blocks used to panic when `keep` fell on the
+        // second byte of a multi-byte UTF-8 character. 'é' is 2 bytes (0xC3 0xA9);
+        // if the computed keep position lands on 0xA9, String::truncate panics.
+        // The fix uses floor_char_boundary to snap to the nearest valid boundary.
+        let text = "é".repeat(6_000); // 12KB of 2-byte chars → eligible (>10KB)
+        let mut conv = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text }],
+        }];
+        // Budget tiny enough to force truncation, should not panic
+        truncate_oversized_blocks(&mut conv, 100);
+        if let ContentBlock::Text { text } = &conv[0].content[0] {
+            assert!(text.contains("truncated"), "should have truncation marker");
+            // Verify the truncated text is valid UTF-8 (no panic on iteration)
+            assert!(text.chars().count() > 0);
+        } else {
+            panic!("expected Text block");
+        }
     }
 
     #[test]

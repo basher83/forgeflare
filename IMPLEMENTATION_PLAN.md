@@ -2,7 +2,7 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~879 production lines across 3 source files with 124 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~877 production lines across 3 source files with 126 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
@@ -10,13 +10,13 @@ Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bomb
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 124 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 126 unit tests.
 
 File structure:
-- src/main.rs (~321 production lines)
+- src/main.rs (~319 production lines)
 - src/api.rs (~254 production lines)
 - src/tools/mod.rs (~304 production lines)
-- Total: ~879 production lines
+- Total: ~877 production lines
 
 ## Architectural Decisions
 
@@ -178,6 +178,10 @@ Bash command guard must block `git push --force` and `git push -f`. The system p
 
 `code_search` error on missing `rg` was a cryptic OS error ("No such file or directory"). Adding an `ErrorKind::NotFound` check surfaces an actionable message ("rg (ripgrep) not found — install it: ...") that tells users exactly what to do. The `rg_err` closure avoids rustfmt line expansion by extracting the match into a named closure before the method chain.
 
+`truncate_oversized_blocks` char boundary panic. The original code used `(keep..text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(keep)` to find a safe truncation point. When `keep` falls on the second byte of a multi-byte UTF-8 character (e.g., 'é' = 0xC3 0xA9) near the end of a string, the exclusive range `keep..text.len()` can miss `text.len()` as a valid boundary, `find` returns `None`, and `unwrap_or(keep)` returns a non-boundary index. `String::truncate` panics. Fixed by using `text.floor_char_boundary(keep)` — the same approach already used in `truncate_with_marker` in tools/mod.rs. 1 new test.
+
+Bash drain `read_to_string` silently discards non-UTF-8 output. The `drain` helper in `bash_exec` used `read_to_string` on subprocess stdout/stderr. When a command emits non-UTF-8 bytes (binary tools, locale issues, `git diff` on binary files), `read_to_string` returns an error at the first invalid byte, and the `let _ =` discards it — silently losing all output after the invalid byte. Fixed by reading into `Vec<u8>` with `read_to_end` and converting with `String::from_utf8_lossy`, which replaces invalid bytes with U+FFFD. 1 new test.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -216,6 +220,8 @@ The specification has been updated to reflect implementation decisions:
 - Bash command guard expanded: `git push --force` and `git push -f` blocked, closing the gap between system prompt safety promises and code enforcement.
 - `edit_file` now detects binary files via shared `read_text_file` helper (null-byte check in first 8KB). DRY extraction eliminates duplication with `read_exec`. 1 new test (123 total).
 - R4 updated: edit_file spec now documents create/append modes (empty old_str). read_file schema corrected. code_search error message improved for missing rg. code_search uses `--` separator before pattern to prevent dash-prefixed patterns from being interpreted as rg flags.
+- `truncate_oversized_blocks` uses `floor_char_boundary` instead of manual range search to prevent panic on multi-byte UTF-8 chars. 1 new test (126 total).
+- Bash drain uses `read_to_end` + `from_utf8_lossy` instead of `read_to_string` to preserve non-UTF-8 output. 1 new test.
 
 ## Verification Checklist
 
@@ -238,7 +244,7 @@ The specification has been updated to reflect implementation decisions:
 [x] code_search: surfaces actionable error when rg is not installed
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (123 unit tests)
+[x] cargo fmt/clippy/build/test passes (126 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -265,4 +271,4 @@ The specification has been updated to reflect implementation decisions:
 [x] search_exec: `--` separator prevents dash-prefixed patterns from being treated as rg flags
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~879 production lines (321 main.rs + 254 api.rs + 304 tools/mod.rs)
+[x] ~877 production lines (319 main.rs + 254 api.rs + 304 tools/mod.rs)
