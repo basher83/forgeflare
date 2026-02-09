@@ -13,6 +13,10 @@ const BLOCKED_PATTERNS: &[&str] = &[
     "rm -rf ~",
     "rm -rf .",
     "rm -rf *",
+    "rm -fr /",
+    "rm -fr ~",
+    "rm -fr .",
+    "rm -fr *",
     "mkfs.",
     "of=/dev/sd",
     "of=/dev/nvme",
@@ -590,6 +594,14 @@ mod tests {
         let result = bash_exec(serde_json::json!({"command": "mkfs.ext4 /dev/sda1"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block mkfs: {err}");
+    }
+
+    #[test]
+    fn bash_blocks_rm_fr_reversed_flags() {
+        // rm -fr is equivalent to rm -rf but uses reversed flag order
+        let result = bash_exec(serde_json::json!({"command": "rm -fr /"}));
+        let err = result.unwrap_err();
+        assert!(err.contains("blocked"), "should block rm -fr /: {err}");
     }
 
     #[test]
