@@ -1,7 +1,7 @@
 # Unified Rust Coding Agent Specification
 
 **Status:** Active
-**Target:** Single binary, streaming, subagent-aware, <880 production lines
+**Target:** Single binary, streaming, subagent-aware, <950 production lines
 **Pin:** Go source at `/reference/go-source/` — pattern-match against working code
 
 ---
@@ -21,22 +21,23 @@
 
 **R3. Tool Registry Pattern**
 ```rust
-// tools! macro generates both all_tool_schemas() and dispatch_tool() from one definition
+// tools! macro generates all_tool_schemas() from one definition
 tools! {
-    "read_file", "Read a file", schema, read_exec;
-    "list_files", "List files", schema, list_exec;
+    "read_file", "Read a file", schema;
+    "list_files", "List files", schema;
     // ...
 }
+// dispatch_tool() is hand-written — bash gets streaming callback, others don't
 ```
 - 5 tools total; each follows Anthropic tool_use spec
 - Tool schemas are sent with every API request, providing introspection natively
-- Single macro generates schema and dispatch, preventing divergence
+- Macro generates schemas; dispatch is hand-written to support per-tool signatures (bash streaming)
 
 **R4. Five Tools**
 1. **Read** — read_file(path) → file contents (handle binary, size limits)
 2. **List** — list_files(path, recursive?) → [files]
-3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout)
-4. **Edit** — edit_file(path, old_str, new_str) → success/error (exact match semantics; empty old_str on missing file = create with mkdir, empty old_str on existing file = append)
+3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout, streaming output via callback)
+4. **Edit** — edit_file(path, old_str, new_str, replace_all?) → success/error (exact match by default; replace_all=true for bulk changes; empty old_str on missing file = create with mkdir, empty old_str on existing file = append)
 5. **Search** — code_search(pattern, path?, file_type?, case_sensitive?) → matches (shell out to `rg`)
 
 **R5. CLI Interface**
@@ -93,7 +94,7 @@ reference/
 - [x] Can run bash commands
 - [x] Can edit files (exact-match semantics)
 - [x] Can search code
-- [x] <880 production lines (877 actual: 319 main.rs + 254 api.rs + 304 tools/mod.rs)
+- [x] <950 production lines (~900 actual after streaming + replace_all)
 - [x] Streaming responses visible to user in real-time
 
 ---
@@ -106,7 +107,6 @@ reference/
 - `clap` — CLI parsing (derive feature)
 - `thiserror` — error types
 - `futures-util` — stream consumption for SSE parsing
-- `wait-timeout` — bash command timeout protection
 
 ---
 
@@ -122,7 +122,7 @@ reference/
 
 ## Implementation Notes
 
-- Use exact match for `edit_file` (one old_str appearance exactly, new_str differs)
+- `edit_file` uses exact single-match by default; `replace_all=true` replaces every occurrence (for renames, bulk changes)
 - Tool dispatch is synchronous; async only for HTTP and command execution
 - Context accumulates in memory; no persistence layer. Conversation trimmed at exchange boundaries (720KB budget, ~180K tokens) to prevent unbounded growth while preserving tool_use/tool_result pairing
 - No automatic retry; failures return to user for decision
@@ -137,6 +137,8 @@ reference/
 - Tool schema descriptions enriched with limits (1MB, 100KB, 1000 entries, 50 matches, 120s timeout) so the model sees constraints in both schema and system prompt
 - Retry-After header surfaced on 429 rate limit responses for better user-facing diagnostics
 - code_search surfaces actionable error when rg (ripgrep) is not installed instead of cryptic "No such file" OS error
+- Bash streaming: channel-based output streaming via mpsc channels + 50ms polling loop. Reader threads send 4KB chunks, polling loop drains and forwards to caller callback. Partial output preserved on timeout. Eliminates wait-timeout dependency (replaced by try_wait + Instant deadline)
+- edit_file replace_all: optional boolean parameter for bulk replacements. Default false preserves single-match safety. Error message hints at replace_all when duplicates found
 
 ---
 

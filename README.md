@@ -5,7 +5,7 @@
 >
 > This software is experimental, unstable, and under active development. APIs will change without notice. Features may be incomplete or broken. There is no support, no documentation guarantees, and no warranty of any kind. Use at your own risk.
 
-A Rust coding agent that uses Claude to edit code, run commands, and search repositories through a stateful conversation loop. Single binary, ~880 lines of production code, 126 tests.
+A Rust coding agent that uses Claude to edit code, run commands, and search repositories through a stateful conversation loop. Single binary, ~900 lines of production code, 135 tests.
 
 ## Tools
 
@@ -13,8 +13,8 @@ The agent exposes five tools to Claude:
 
 - `read_file` -- file contents with line numbers (1 MB limit, binary detection)
 - `list_files` -- directory listing with optional recursion (auto-skips .git, node_modules, target, etc.)
-- `edit_file` -- surgical text replacement with exact-match guarantees, or create/append
-- `bash` -- shell command execution (120 s timeout, 100 KB output cap, blocked destructive patterns)
+- `edit_file` -- surgical text replacement with exact-match default or `replace_all` for bulk changes, plus create/append
+- `bash` -- shell command execution with real-time output streaming (120 s timeout, 100 KB output cap, blocked destructive patterns)
 - `code_search` -- regex search via ripgrep (50-match limit, file type filtering)
 
 ## Quick Start

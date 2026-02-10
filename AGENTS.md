@@ -30,11 +30,11 @@ Binary: `agent`
 src/
   main.rs         — CLI loop, user interface, system prompt (build_system_prompt)
   api.rs          — Anthropic client (reqwest + SSE)
-  tools/mod.rs    — 5 tools with tools! macro (read, list, bash, edit, search)
+  tools/mod.rs    — 5 tools: read, list, bash (streaming), edit (replace_all), search
 ```
 
-126 tests
+135 tests
 
 ## Dependencies
 
-reqwest 0.13, thiserror 2, futures-util 0.3, wait-timeout 0.2, serde/serde_json, tokio, clap
+reqwest 0.13, thiserror 2, futures-util 0.3, serde/serde_json, tokio, clap

@@ -2,21 +2,21 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~877 production lines across 3 source files with 126 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~900 production lines across 3 source files with 135 unit tests.
 
-Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
+Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. Bash tool streams output in real time via channel-based streaming (mpsc channels, 50ms polling loop, callback-based output). edit_file supports replace_all for bulk replacements. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
 
 Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bombs, dd to block devices including /dev/sd, /dev/nvme, /dev/vd, /dev/hd, mkfs, chmod 777, git push --force, git push -f) with whitespace normalization and expanded flag ordering coverage. Redirect-to-device patterns cover all four device families. Timeout drain thread leak fixed. walk() has depth limit (MAX_WALK_DEPTH=20) and skips permission-denied entries. SSE parser validates tool_use blocks have non-empty id/name fields. search_exec applies 50-line cap before 100KB byte cap.
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 126 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 135 unit tests.
 
 File structure:
-- src/main.rs (~319 production lines)
+- src/main.rs (~320 production lines)
 - src/api.rs (~254 production lines)
-- src/tools/mod.rs (~304 production lines)
-- Total: ~877 production lines
+- src/tools/mod.rs (~330 production lines)
+- Total: ~904 production lines
 
 ## Architectural Decisions
 
@@ -38,7 +38,7 @@ Manual SSE parsing handles `content_block_start`, `content_block_delta`, `conten
 
 Tool errors become `tool_result` text, not Rust errors. Following Go at `edit_tool.go:149-183`, tool execution failures return as `tool_result` blocks with `is_error: true`.
 
-tools! macro generates both `all_tool_schemas()` and `dispatch_tool()` from one definition, preventing schema/dispatch divergence.
+tools! macro generates `all_tool_schemas()` from one definition. `dispatch_tool()` is hand-written to support per-tool signatures — bash gets a streaming callback parameter (`&mut dyn FnMut(&str)`), other tools keep their original signatures.
 
 System prompt is built dynamically at startup in main.rs via `build_system_prompt()` and passed to `send_message` as a parameter. This injects the working directory and platform (os/arch) at runtime. The prompt includes structured tool behavioral guidance (rg semantics, edit_file exact-match rules, bash timeout/truncation limits) and safety rules (read-before-edit, no destructive ops without approval). Moving the prompt from a static string in api.rs to a parameter keeps the API module clean while enabling runtime context injection.
 
@@ -86,7 +86,7 @@ SseParser extraction enables testability without HTTP mocks. By pulling the SSE 
 
 Tool loop iteration limit prevents runaway agent behavior. A safety limit of 50 iterations on the inner tool dispatch loop catches infinite loops where Claude keeps requesting tools. The limit is high enough for complex multi-step tasks but prevents unbounded API costs. Must call recover_conversation on limit break to maintain alternation.
 
-Generic `drain<R: Read>` helper eliminates bash stdout/stderr thread spawn duplication. Both stdout and stderr need identical drain-in-thread logic but have different types (`ChildStdout` vs `ChildStderr`). A generic inner function handles both with a single implementation.
+Bash streaming replaced drain<R: Read> helper with channel-based architecture. Two reader threads send 4KB chunks through mpsc channels. A polling loop drains chunks (calling an on_output callback for stdout, accumulating both streams), checks try_wait for child exit, and checks Instant deadline for timeout. Partial output is preserved on timeout instead of being silently discarded. The wait-timeout crate was eliminated entirely — try_wait + Instant deadline replaced wait_timeout(). Accumulators overshoot by 1 byte (MAX_BASH_OUTPUT + 1) to match the old overflow detection behavior.
 
 Piped stdin must be read as a single prompt, not line-by-line. The Go reference processes piped input line-by-line (each line becomes a separate API call), which silently produces wrong behavior when users pipe multi-line prompts. The fix reads all of stdin into one string before entering the conversation loop.
 
@@ -164,7 +164,7 @@ Tool schema descriptions must match the actual skip directory list. The `list_fi
 
 Production line count reduction requires rustfmt-aware refactoring. rustfmt expands compressed `format!` calls and method chains beyond ~90 characters. Safe approaches: inlining temporary variables into `ok_or_else` closures, combining doc comment lines, eliminating intermediate String allocations (`push_str(&format!(...))` → direct `format!`). Unsafe approaches: single-line `format!` calls with positional args (rustfmt splits), `.then()` chains (rustfmt expands).
 
-Bash drain threads must read bounded data. The original `drain` helper used `read_to_string` with no size cap, meaning a command producing 500MB of stdout would allocate 500MB in the drain thread before the 100KB post-join truncation fired. Fixed by using `Read::take((MAX_BASH_OUTPUT + 1) as u64)` to cap the read, then `into_inner()` + `io::copy` to `sink()` to drain the remaining pipe data so the child process isn't blocked. The +1 allows the post-join truncation logic to detect overflow.
+Bash output memory is bounded by channel accumulation caps, not reader-side limiting. Reader threads send all chunks through the channel; the polling loop accumulates up to MAX_BASH_OUTPUT + 1 bytes per stream. The +1 allows the post-loop truncation logic to detect overflow (same detection pattern as the old take()-based approach). Reader threads read unbounded from the pipe (preventing child process blocking) but the accumulator caps prevent memory growth.
 
 `str::floor_char_boundary(n)` (stable since Rust 1.82) replaces the manual reverse-scan pattern `(0..=n).rev().find(|&i| s.is_char_boundary(i))`. Cleaner and saves 3 lines.
 
@@ -222,6 +222,12 @@ The specification has been updated to reflect implementation decisions:
 - R4 updated: edit_file spec now documents create/append modes (empty old_str). read_file schema corrected. code_search error message improved for missing rg. code_search uses `--` separator before pattern to prevent dash-prefixed patterns from being interpreted as rg flags.
 - `truncate_oversized_blocks` uses `floor_char_boundary` instead of manual range search to prevent panic on multi-byte UTF-8 chars. 1 new test (126 total).
 - Bash drain uses `read_to_end` + `from_utf8_lossy` instead of `read_to_string` to preserve non-UTF-8 output. 1 new test.
+- Channel-based bash streaming replaces drain-and-wait with mpsc channels + polling loop. Reader threads send 4KB chunks; polling loop drains and forwards stdout to caller via `on_output: &mut dyn FnMut(&str)` callback. Eliminates wait-timeout dependency. Partial output preserved on timeout. 4 new streaming tests (130 total).
+- edit_file replace_all parameter: optional boolean, default false. When true, uses str::replace instead of replacen(..., 1), skips uniqueness check, reports occurrence count. Error message for duplicates now hints at replace_all. 5 new tests (135 total).
+- tools! macro split: macro now generates only all_tool_schemas(). dispatch_tool() is hand-written so bash can receive a streaming callback while other tools keep their original signatures. This avoids threading a useless parameter through 4 functions and 40+ tests.
+- wait-timeout dependency eliminated. try_wait() + Instant::now() deadline in the polling loop replaces wait_timeout(). One fewer external dependency.
+- Working directory state evaluated and rejected. 3% context savings from shorter paths doesn't justify hidden state in an engine designed for debuggability in autonomous loops. The existing cwd parameter on bash covers the main pain point. Other tools naturally use paths from prior results.
+- Production line counting: main.rs ~320 + api.rs ~254 + tools/mod.rs ~330 = ~904 total (increase from streaming rewrite and replace_all logic).
 
 ## Verification Checklist
 
@@ -244,7 +250,7 @@ The specification has been updated to reflect implementation decisions:
 [x] code_search: surfaces actionable error when rg is not installed
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (126 unit tests)
+[x] cargo fmt/clippy/build/test passes (135 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -271,4 +277,10 @@ The specification has been updated to reflect implementation decisions:
 [x] search_exec: `--` separator prevents dash-prefixed patterns from being treated as rg flags
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~877 production lines (319 main.rs + 254 api.rs + 304 tools/mod.rs)
+[x] ~904 production lines (~320 main.rs + ~254 api.rs + ~330 tools/mod.rs)
+[x] Bash streaming: channel-based output streaming via mpsc + polling loop + callback
+[x] Bash timeout: partial output preserved (was silently discarded)
+[x] edit_file replace_all: optional boolean for bulk replacements
+[x] wait-timeout dependency eliminated (try_wait + Instant deadline)
+[x] dispatch_tool hand-written (macro generates schemas only) for per-tool signatures
+[x] 135 unit tests (originally 126; +4 streaming, +5 replace_all)
