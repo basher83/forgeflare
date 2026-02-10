@@ -1,7 +1,13 @@
 use crate::api::ContentBlock;
 use serde_json::Value;
-use std::{fs, io::Read, path::Path, process::Command, time::Duration};
-use wait_timeout::ChildExt;
+use std::{
+    fs,
+    io::Read,
+    path::Path,
+    process::Command,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 const BASH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_READ_SIZE: u64 = 1024 * 1024; // 1MB
@@ -37,36 +43,60 @@ const BLOCKED_PATTERNS: &[&str] = &[
 ];
 
 macro_rules! tools {
-    ($($name:expr, $desc:expr, $schema:expr, $func:expr);+ $(;)?) => {
+    ($($name:expr, $desc:expr, $schema:expr);+ $(;)?) => {
         pub fn all_tool_schemas() -> Vec<Value> {
             vec![$(serde_json::json!({"name": $name, "description": $desc, "input_schema": $schema})),+]
-        }
-        pub fn dispatch_tool(name: &str, input: Value, id: &str) -> ContentBlock {
-            let (content, is_error) = match name {
-                $($name => match $func(input) { Ok(s) => (s, None), Err(s) => (s, Some(true)) },)+
-                _ => (format!("tool '{name}' not found"), Some(true)),
-            };
-            ContentBlock::ToolResult { tool_use_id: id.to_string(), content, is_error }
         }
     };
 }
 
 tools! {
     "read_file", "Read file contents with line numbers. 1MB size limit. Detects binary files. Use before editing — never edit without reading first.",
-    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "File path to read"}}, "required": ["path"]}),
-    read_exec;
+    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "File path to read"}}, "required": ["path"]});
     "list_files", "List files and directories. Defaults to current directory, non-recursive. Skips .git, .devenv, node_modules, target, .venv, vendor. 1000 entry cap.",
-    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []}),
-    list_exec;
-    "bash", "Execute a bash command. 120s timeout, 100KB output cap. Non-zero exit = error. Each call is a fresh shell — use cwd param or absolute paths.",
-    serde_json::json!({"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "cwd": {"type": "string", "description": "Optional working directory"}}, "required": ["command"]}),
-    bash_exec;
-    "edit_file", "Make edits to a text file (1MB limit). Replaces 'old_str' with 'new_str' in the given file. 'old_str' and 'new_str' MUST be different from each other. If the file doesn't exist and old_str is empty, it will be created.",
-    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for (must match exactly once). Empty string = create/append mode"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}}, "required": ["path", "old_str", "new_str"]}),
-    edit_exec;
+    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []});
+    "bash", "Execute a bash command. 120s timeout, 100KB output cap. Streams output in real time. Non-zero exit = error. Each call is a fresh shell — use cwd param or absolute paths.",
+    serde_json::json!({"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "cwd": {"type": "string", "description": "Optional working directory"}}, "required": ["command"]});
+    "edit_file", "Make edits to a text file (1MB limit). Replaces 'old_str' with 'new_str'. By default old_str must match exactly once; set replace_all=true to replace every occurrence. old_str and new_str MUST differ. Empty old_str + missing file = create. Empty old_str + existing file = append.",
+    serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for (must match exactly once unless replace_all is true). Empty string = create/append mode"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}, "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_str (default: false)"}}, "required": ["path", "old_str", "new_str"]});
     "code_search", "Search code via ripgrep (rg). Regex patterns, case-insensitive by default. 50 match limit. Prefer over bash grep/find.",
-    serde_json::json!({"type": "object", "properties": {"pattern": {"type": "string", "description": "The search pattern or regex"}, "path": {"type": "string", "description": "Optional path to search in"}, "file_type": {"type": "string", "description": "File extension filter (e.g. 'go', 'js')"}, "case_sensitive": {"type": "boolean", "description": "Case sensitive (default: false)"}}, "required": ["pattern"]}),
-    search_exec;
+    serde_json::json!({"type": "object", "properties": {"pattern": {"type": "string", "description": "The search pattern or regex"}, "path": {"type": "string", "description": "Optional path to search in"}, "file_type": {"type": "string", "description": "File extension filter (e.g. 'go', 'js')"}, "case_sensitive": {"type": "boolean", "description": "Case sensitive (default: false)"}}, "required": ["pattern"]});
+}
+
+pub fn dispatch_tool(
+    name: &str,
+    input: Value,
+    id: &str,
+    on_output: &mut dyn FnMut(&str),
+) -> ContentBlock {
+    let (content, is_error) = match name {
+        "read_file" => match read_exec(input) {
+            Ok(s) => (s, None),
+            Err(s) => (s, Some(true)),
+        },
+        "list_files" => match list_exec(input) {
+            Ok(s) => (s, None),
+            Err(s) => (s, Some(true)),
+        },
+        "bash" => match bash_exec(input, on_output) {
+            Ok(s) => (s, None),
+            Err(s) => (s, Some(true)),
+        },
+        "edit_file" => match edit_exec(input) {
+            Ok(s) => (s, None),
+            Err(s) => (s, Some(true)),
+        },
+        "code_search" => match search_exec(input) {
+            Ok(s) => (s, None),
+            Err(s) => (s, Some(true)),
+        },
+        _ => (format!("tool '{name}' not found"), Some(true)),
+    };
+    ContentBlock::ToolResult {
+        tool_use_id: id.to_string(),
+        content,
+        is_error,
+    }
 }
 
 /// Read a text file with 1MB size guard, binary detection, and UTF-8 validation.
@@ -160,7 +190,7 @@ fn truncate_with_marker(s: &mut String, max: usize) {
     s.push_str("\n... (output truncated at 100KB)");
 }
 
-fn bash_exec(input: Value) -> Result<String, String> {
+fn bash_exec(input: Value, on_output: &mut dyn FnMut(&str)) -> Result<String, String> {
     let command = input["command"].as_str().ok_or("command is required")?;
     let normalized: String = command
         .to_lowercase()
@@ -182,40 +212,103 @@ fn bash_exec(input: Value) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("exec failed: {e}"))?;
-    fn drain<R: Read + Send + 'static>(r: R) -> std::thread::JoinHandle<String> {
-        std::thread::spawn(move || {
-            let mut limited = r.take((MAX_BASH_OUTPUT + 1) as u64);
-            let mut buf = Vec::new();
-            let _ = limited.read_to_end(&mut buf);
-            std::io::copy(&mut limited.into_inner(), &mut std::io::sink()).ok();
-            String::from_utf8_lossy(&buf).into_owned()
-        })
-    }
-    let out_h = drain(child.stdout.take().ok_or("failed to capture stdout")?);
-    let err_h = drain(child.stderr.take().ok_or("failed to capture stderr")?);
 
-    let status = match child
-        .wait_timeout(BASH_TIMEOUT)
-        .map_err(|e| format!("wait: {e}"))?
-    {
-        Some(s) => s,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = out_h.join();
-            let _ = err_h.join();
-            return Err("Command timed out after 120s and was killed".into());
+    let (tx_out, rx_out) = mpsc::channel::<Vec<u8>>();
+    let (tx_err, rx_err) = mpsc::channel::<Vec<u8>>();
+
+    let stdout = child.stdout.take().ok_or("failed to capture stdout")?;
+    let out_h = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut reader = stdout;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx_out.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let stderr = child.stderr.take().ok_or("failed to capture stderr")?;
+    let err_h = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut reader = stderr;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx_err.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut stdout_acc = Vec::<u8>::new();
+    let mut stderr_acc = Vec::<u8>::new();
+    let deadline = Instant::now() + BASH_TIMEOUT;
+
+    // Poll: drain streaming chunks while waiting for child to exit
+    let status: Option<std::process::ExitStatus> = loop {
+        while let Ok(data) = rx_out.try_recv() {
+            on_output(&String::from_utf8_lossy(&data));
+            let room = (MAX_BASH_OUTPUT + 1).saturating_sub(stdout_acc.len());
+            stdout_acc.extend_from_slice(&data[..data.len().min(room)]);
+        }
+        while let Ok(data) = rx_err.try_recv() {
+            let room = (MAX_BASH_OUTPUT + 1).saturating_sub(stderr_acc.len());
+            stderr_acc.extend_from_slice(&data[..data.len().min(room)]);
+        }
+        match child.try_wait().map_err(|e| format!("wait: {e}"))? {
+            Some(s) => break Some(s),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            _ => std::thread::sleep(Duration::from_millis(50)),
         }
     };
-    let stdout = out_h.join().map_err(|_| "stdout reader thread panicked")?;
-    let stderr = err_h.join().map_err(|_| "stderr reader thread panicked")?;
-    let mut output = if !stdout.is_empty() && !stderr.is_empty() {
-        format!("{stdout}\n--- stderr ---\n{stderr}")
-    } else {
-        format!("{stdout}{stderr}")
+
+    // Join reader threads and drain any remaining chunks
+    let _ = out_h.join();
+    let _ = err_h.join();
+    while let Ok(data) = rx_out.try_recv() {
+        on_output(&String::from_utf8_lossy(&data));
+        let room = (MAX_BASH_OUTPUT + 1).saturating_sub(stdout_acc.len());
+        stdout_acc.extend_from_slice(&data[..data.len().min(room)]);
     }
-    .trim()
-    .to_string();
+    while let Ok(data) = rx_err.try_recv() {
+        let room = (MAX_BASH_OUTPUT + 1).saturating_sub(stderr_acc.len());
+        stderr_acc.extend_from_slice(&data[..data.len().min(room)]);
+    }
+
+    // Format combined output
+    let stdout_s = String::from_utf8_lossy(&stdout_acc).trim().to_string();
+    let stderr_s = String::from_utf8_lossy(&stderr_acc).trim().to_string();
+    let mut output = if !stdout_s.is_empty() && !stderr_s.is_empty() {
+        format!("{stdout_s}\n--- stderr ---\n{stderr_s}")
+    } else {
+        format!("{stdout_s}{stderr_s}")
+    };
+
+    if status.is_none() {
+        let mut msg = if output.is_empty() {
+            "Command timed out after 120s and was killed".into()
+        } else {
+            format!("Command timed out after 120s and was killed. Partial output:\n{output}")
+        };
+        if msg.len() > MAX_BASH_OUTPUT {
+            truncate_with_marker(&mut msg, MAX_BASH_OUTPUT);
+        }
+        return Err(msg);
+    }
+
+    let status = status.unwrap();
     if !status.success() {
         let mut msg = format!("Command failed ({status}): {output}");
         if msg.len() > MAX_BASH_OUTPUT {
@@ -244,19 +337,29 @@ fn edit_exec(input: Value) -> Result<String, String> {
         fs::write(path, new_str).map_err(|e| format!("write: {e}"))?;
         return Ok(format!("Created {path_s}"));
     }
+    let replace_all = input["replace_all"].as_bool().unwrap_or(false);
     let content = read_text_file(path_s)?;
     if old_str.is_empty() {
         fs::write(path, format!("{content}{new_str}")).map_err(|e| format!("write: {e}"))?;
+        return Ok("OK".to_string());
+    }
+    let count = content.matches(old_str).count();
+    if count == 0 {
+        return Err("old_str not found".into());
+    }
+    if replace_all {
+        fs::write(path, content.replace(old_str, new_str)).map_err(|e| format!("write: {e}"))?;
+        Ok(format!("OK (replaced {count} occurrences)"))
     } else {
-        match content.matches(old_str).count() {
-            0 => return Err("old_str not found".into()),
-            1 => {}
-            n => return Err(format!("old_str found {n} times, must be unique")),
+        if count > 1 {
+            return Err(format!(
+                "old_str found {count} times, must be unique (use replace_all to replace all)"
+            ));
         }
         fs::write(path, content.replacen(old_str, new_str, 1))
             .map_err(|e| format!("write: {e}"))?;
+        Ok("OK".to_string())
     }
-    Ok("OK".to_string())
 }
 
 fn search_exec(input: Value) -> Result<String, String> {
@@ -306,6 +409,16 @@ fn search_exec(input: Value) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// Test wrapper: dispatch_tool with noop streaming callback
+    fn t_dispatch(name: &str, input: Value, id: &str) -> ContentBlock {
+        dispatch_tool(name, input, id, &mut |_| {})
+    }
+
+    /// Test wrapper: bash_exec with noop streaming callback
+    fn t_bash(input: Value) -> Result<String, String> {
+        bash_exec(input, &mut |_| {})
+    }
+
     #[test]
     fn schemas_returns_five() {
         let schemas = all_tool_schemas();
@@ -320,7 +433,7 @@ mod tests {
 
     #[test]
     fn dispatch_known_tool() {
-        let block = dispatch_tool(
+        let block = t_dispatch(
             "bash",
             serde_json::json!({"command": "echo dispatch_test"}),
             "test-id",
@@ -341,7 +454,7 @@ mod tests {
 
     #[test]
     fn dispatch_unknown_tool() {
-        let block = dispatch_tool("nonexistent", Value::Null, "id-1");
+        let block = t_dispatch("nonexistent", Value::Null, "id-1");
         if let ContentBlock::ToolResult {
             content, is_error, ..
         } = block
@@ -355,7 +468,7 @@ mod tests {
 
     #[test]
     fn dispatch_tool_error_propagates() {
-        let block = dispatch_tool(
+        let block = t_dispatch(
             "read_file",
             serde_json::json!({"path": "/tmp/_nonexistent_forgeflare_"}),
             "id-2",
@@ -535,33 +648,33 @@ mod tests {
 
     #[test]
     fn bash_echo() {
-        let result = bash_exec(serde_json::json!({"command": "echo hello"}));
+        let result = t_bash(serde_json::json!({"command": "echo hello"}));
         assert_eq!(result.unwrap(), "hello");
     }
 
     #[test]
     fn bash_missing_command() {
-        let result = bash_exec(serde_json::json!({}));
+        let result = t_bash(serde_json::json!({}));
         assert_eq!(result.unwrap_err(), "command is required");
     }
 
     #[test]
     fn bash_failing_command() {
-        let result = bash_exec(serde_json::json!({"command": "false"}));
+        let result = t_bash(serde_json::json!({"command": "false"}));
         let err = result.unwrap_err();
         assert!(err.starts_with("Command failed"));
     }
 
     #[test]
     fn bash_with_cwd() {
-        let result = bash_exec(serde_json::json!({"command": "pwd", "cwd": "/tmp"}));
+        let result = t_bash(serde_json::json!({"command": "pwd", "cwd": "/tmp"}));
         let output = result.unwrap();
         assert!(output.contains("tmp") || output.contains("private/tmp"));
     }
 
     #[test]
     fn bash_stderr_captured() {
-        let result = bash_exec(serde_json::json!({"command": "echo err >&2"}));
+        let result = t_bash(serde_json::json!({"command": "echo err >&2"}));
         let output = result.unwrap();
         assert!(output.contains("err"));
     }
@@ -569,7 +682,7 @@ mod tests {
     #[test]
     fn bash_stdout_stderr_separated() {
         // When both stdout and stderr have content, they should be labeled and separated
-        let result = bash_exec(serde_json::json!({"command": "echo out; echo err >&2"}));
+        let result = t_bash(serde_json::json!({"command": "echo out; echo err >&2"}));
         let output = result.unwrap();
         assert!(output.contains("out"), "should contain stdout");
         assert!(output.contains("err"), "should contain stderr");
@@ -581,35 +694,35 @@ mod tests {
 
     #[test]
     fn bash_blocks_dangerous_rm_rf() {
-        let result = bash_exec(serde_json::json!({"command": "rm -rf /"}));
+        let result = t_bash(serde_json::json!({"command": "rm -rf /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block rm -rf /: {err}");
     }
 
     #[test]
     fn bash_blocks_fork_bomb() {
-        let result = bash_exec(serde_json::json!({"command": ":(){ :|:& };:"}));
+        let result = t_bash(serde_json::json!({"command": ":(){ :|:& };:"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block fork bomb: {err}");
     }
 
     #[test]
     fn bash_blocks_dd_to_device() {
-        let result = bash_exec(serde_json::json!({"command": "dd if=/dev/zero of=/dev/sda"}));
+        let result = t_bash(serde_json::json!({"command": "dd if=/dev/zero of=/dev/sda"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block dd to device: {err}");
     }
 
     #[test]
     fn bash_blocks_chmod_777_root() {
-        let result = bash_exec(serde_json::json!({"command": "chmod -R 777 /"}));
+        let result = t_bash(serde_json::json!({"command": "chmod -R 777 /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block chmod 777 /: {err}");
     }
 
     #[test]
     fn bash_blocks_mkfs() {
-        let result = bash_exec(serde_json::json!({"command": "mkfs.ext4 /dev/sda1"}));
+        let result = t_bash(serde_json::json!({"command": "mkfs.ext4 /dev/sda1"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block mkfs: {err}");
     }
@@ -617,7 +730,7 @@ mod tests {
     #[test]
     fn bash_blocks_rm_fr_reversed_flags() {
         // rm -fr is equivalent to rm -rf but uses reversed flag order
-        let result = bash_exec(serde_json::json!({"command": "rm -fr /"}));
+        let result = t_bash(serde_json::json!({"command": "rm -fr /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block rm -fr /: {err}");
     }
@@ -625,11 +738,11 @@ mod tests {
     #[test]
     fn bash_blocks_rm_separate_flags() {
         // rm -r -f / uses separate flags instead of combined
-        let result = bash_exec(serde_json::json!({"command": "rm -r -f /"}));
+        let result = t_bash(serde_json::json!({"command": "rm -r -f /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block rm -r -f: {err}");
 
-        let result = bash_exec(serde_json::json!({"command": "rm -f -r /important"}));
+        let result = t_bash(serde_json::json!({"command": "rm -f -r /important"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block rm -f -r: {err}");
     }
@@ -637,14 +750,14 @@ mod tests {
     #[test]
     fn bash_blocks_rm_long_flags() {
         // Long flag forms: --recursive --force
-        let result = bash_exec(serde_json::json!({"command": "rm --recursive --force /some/path"}));
+        let result = t_bash(serde_json::json!({"command": "rm --recursive --force /some/path"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
             "should block rm --recursive --force: {err}"
         );
 
-        let result = bash_exec(serde_json::json!({"command": "rm --force --recursive /some/path"}));
+        let result = t_bash(serde_json::json!({"command": "rm --force --recursive /some/path"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
@@ -655,7 +768,7 @@ mod tests {
     #[test]
     fn bash_blocks_chmod_777_without_r_flag() {
         // chmod 777 / (without -R) is also destructive
-        let result = bash_exec(serde_json::json!({"command": "chmod 777 /"}));
+        let result = t_bash(serde_json::json!({"command": "chmod 777 /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block chmod 777 /: {err}");
     }
@@ -663,11 +776,11 @@ mod tests {
     #[test]
     fn bash_blocks_whitespace_variations() {
         // Double spaces and tabs between flags should be caught via normalization
-        let result = bash_exec(serde_json::json!({"command": "rm  -rf  /"}));
+        let result = t_bash(serde_json::json!({"command": "rm  -rf  /"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block rm  -rf  /: {err}");
 
-        let result = bash_exec(serde_json::json!({"command": "rm\t-rf\t/"}));
+        let result = t_bash(serde_json::json!({"command": "rm\t-rf\t/"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
@@ -678,11 +791,11 @@ mod tests {
     #[test]
     fn bash_blocks_dd_to_virtual_devices() {
         // dd to virtual disk devices (KVM/QEMU /dev/vd*, legacy IDE /dev/hd*)
-        let result = bash_exec(serde_json::json!({"command": "dd if=/dev/zero of=/dev/vda"}));
+        let result = t_bash(serde_json::json!({"command": "dd if=/dev/zero of=/dev/vda"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block dd to /dev/vd: {err}");
 
-        let result = bash_exec(serde_json::json!({"command": "dd if=/dev/zero of=/dev/hda1"}));
+        let result = t_bash(serde_json::json!({"command": "dd if=/dev/zero of=/dev/hda1"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block dd to /dev/hd: {err}");
     }
@@ -690,7 +803,7 @@ mod tests {
     #[test]
     fn bash_blocks_redirect_to_nvme_device() {
         // Redirect to NVMe device — previously only /dev/sd was covered
-        let result = bash_exec(serde_json::json!({"command": "echo x > /dev/nvme0n1"}));
+        let result = t_bash(serde_json::json!({"command": "echo x > /dev/nvme0n1"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
@@ -700,14 +813,14 @@ mod tests {
 
     #[test]
     fn bash_blocks_redirect_to_virtual_devices() {
-        let result = bash_exec(serde_json::json!({"command": "cat /dev/zero > /dev/vda"}));
+        let result = t_bash(serde_json::json!({"command": "cat /dev/zero > /dev/vda"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
             "should block redirect to /dev/vd: {err}"
         );
 
-        let result = bash_exec(serde_json::json!({"command": "echo > /dev/hda"}));
+        let result = t_bash(serde_json::json!({"command": "echo > /dev/hda"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
@@ -718,7 +831,7 @@ mod tests {
     #[test]
     fn bash_blocks_git_force_push() {
         // git push --force can destroy shared repository history and is irreversible
-        let result = bash_exec(serde_json::json!({"command": "git push --force origin main"}));
+        let result = t_bash(serde_json::json!({"command": "git push --force origin main"}));
         let err = result.unwrap_err();
         assert!(
             err.contains("blocked"),
@@ -729,7 +842,7 @@ mod tests {
     #[test]
     fn bash_blocks_git_force_push_short_flag() {
         // git push -f is equivalent to git push --force
-        let result = bash_exec(serde_json::json!({"command": "git push -f origin main"}));
+        let result = t_bash(serde_json::json!({"command": "git push -f origin main"}));
         let err = result.unwrap_err();
         assert!(err.contains("blocked"), "should block git push -f: {err}");
     }
@@ -737,21 +850,21 @@ mod tests {
     #[test]
     fn bash_allows_normal_git_push() {
         // Normal git push (without --force/-f) must NOT be blocked
-        let result = bash_exec(serde_json::json!({"command": "echo 'git push origin main'"}));
+        let result = t_bash(serde_json::json!({"command": "echo 'git push origin main'"}));
         assert!(result.is_ok(), "normal git push should not be blocked");
     }
 
     #[test]
     fn bash_allows_safe_commands() {
         // Ensure the guard doesn't block normal commands
-        let result = bash_exec(serde_json::json!({"command": "echo hello"}));
+        let result = t_bash(serde_json::json!({"command": "echo hello"}));
         assert!(result.is_ok(), "safe commands should not be blocked");
     }
 
     #[test]
     fn bash_output_truncated() {
         // Generate output larger than MAX_BASH_OUTPUT (100KB) using printf
-        let result = bash_exec(
+        let result = t_bash(
             serde_json::json!({"command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"}),
         );
         let output = result.unwrap();
@@ -834,7 +947,12 @@ mod tests {
             "old_str": "a",
             "new_str": "b"
         }));
-        assert!(result.unwrap_err().contains("3 times"));
+        let err = result.unwrap_err();
+        assert!(err.contains("3 times"), "should report count: {err}");
+        assert!(
+            err.contains("replace_all"),
+            "should hint at replace_all: {err}"
+        );
     }
 
     #[test]
@@ -905,10 +1023,94 @@ mod tests {
         assert_eq!(result.unwrap_err(), "old_str and new_str must differ");
     }
 
+    // --- replace_all tests ---
+
+    #[test]
+    fn edit_replace_all_multiple_occurrences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "aaa").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "a",
+            "new_str": "b",
+            "replace_all": true
+        }));
+        let msg = result.unwrap();
+        assert!(msg.contains("3 occurrences"), "should report count: {msg}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "bbb");
+    }
+
+    #[test]
+    fn edit_replace_all_single_occurrence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "hello world").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "hello",
+            "new_str": "goodbye",
+            "replace_all": true
+        }));
+        let msg = result.unwrap();
+        assert!(msg.contains("1 occurrences"), "should report count: {msg}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye world");
+    }
+
+    #[test]
+    fn edit_replace_all_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "hello").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "missing",
+            "new_str": "replacement",
+            "replace_all": true
+        }));
+        assert_eq!(result.unwrap_err(), "old_str not found");
+    }
+
+    #[test]
+    fn edit_replace_all_default_false() {
+        // Without replace_all, duplicate matches still error
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "aaa").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "a",
+            "new_str": "b"
+        }));
+        assert!(
+            result.is_err(),
+            "should reject duplicates without replace_all"
+        );
+    }
+
+    #[test]
+    fn edit_replace_all_rename_variable() {
+        // Real-world use case: rename a variable across a file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("code.rs");
+        fs::write(&path, "let foo = 1;\nprintln!(\"{}\", foo);\nfoo + 2").unwrap();
+        let result = edit_exec(serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "foo",
+            "new_str": "bar",
+            "replace_all": true
+        }));
+        let msg = result.unwrap();
+        assert!(msg.contains("3 occurrences"), "should replace all: {msg}");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("foo"), "no foo should remain");
+        assert_eq!(content.matches("bar").count(), 3);
+    }
+
     #[test]
     fn bash_error_output_truncated() {
         // Error path should also truncate oversized output
-        let result = bash_exec(
+        let result = t_bash(
             serde_json::json!({"command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'; exit 1"}),
         );
         let err = result.unwrap_err();
@@ -935,10 +1137,10 @@ mod tests {
     fn bash_failed_command_signals_is_error() {
         // Non-zero exit returns Err, which dispatch_tool maps to is_error: Some(true).
         // This matches the Anthropic API protocol: tool failures should set is_error.
-        let result = bash_exec(serde_json::json!({"command": "exit 0"}));
+        let result = t_bash(serde_json::json!({"command": "exit 0"}));
         assert!(result.is_ok(), "successful commands return Ok");
 
-        let block = dispatch_tool(
+        let block = t_dispatch(
             "bash",
             serde_json::json!({"command": "false"}),
             "error-test",
@@ -1041,7 +1243,7 @@ mod tests {
         // Tools with required parameters should return is_error.
         // list_files has no required parameters, so null input succeeds (lists cwd).
         for name in ["read_file", "bash", "edit_file", "code_search"] {
-            let block = dispatch_tool(name, Value::Null, "null-test");
+            let block = t_dispatch(name, Value::Null, "null-test");
             if let ContentBlock::ToolResult { is_error, .. } = &block {
                 assert_eq!(*is_error, Some(true), "{name} should error on null input");
             } else {
@@ -1119,7 +1321,7 @@ mod tests {
 
     #[test]
     fn bash_invalid_cwd_returns_error() {
-        let result = bash_exec(
+        let result = t_bash(
             serde_json::json!({"command": "pwd", "cwd": "/tmp/_nonexistent_forgeflare_dir_"}),
         );
         assert!(result.is_err(), "invalid cwd should error");
@@ -1144,7 +1346,7 @@ mod tests {
     fn bash_drain_bounded_memory() {
         // Generates ~2MB of output; drain thread must cap at MAX_BASH_OUTPUT+1 bytes
         // to prevent OOM. The post-join truncation adds the marker.
-        let result = bash_exec(
+        let result = t_bash(
             serde_json::json!({"command": "dd if=/dev/zero bs=1024 count=2048 2>/dev/null | tr '\\0' 'A'"}),
         );
         let output = result.unwrap();
@@ -1167,7 +1369,7 @@ mod tests {
         // Uses a short-lived command that sleeps, but we can't reduce BASH_TIMEOUT
         // in tests, so instead verify the timeout constant is 120s and test the
         // error message format for a command that fails immediately via kill.
-        let result = bash_exec(serde_json::json!({"command": "kill -9 $$"}));
+        let result = t_bash(serde_json::json!({"command": "kill -9 $$"}));
         assert!(result.is_err(), "killed process should error");
         let err = result.unwrap_err();
         assert!(
@@ -1182,7 +1384,7 @@ mod tests {
         // UTF-8 byte. Commands that emit non-UTF-8 output (binary tools, locale issues)
         // would produce silently truncated results. The fix uses from_utf8_lossy which
         // replaces invalid bytes with the Unicode replacement character.
-        let result = bash_exec(serde_json::json!({"command": "printf 'before\\x80\\xFFafter'"}));
+        let result = t_bash(serde_json::json!({"command": "printf 'before\\x80\\xFFafter'"}));
         let output = result.unwrap();
         assert!(
             output.contains("before"),
@@ -1195,6 +1397,88 @@ mod tests {
         assert!(
             output.contains('\u{FFFD}'),
             "invalid bytes should be replaced with U+FFFD: {output}"
+        );
+    }
+
+    // --- streaming tests ---
+
+    #[test]
+    fn bash_streams_output_to_callback() {
+        let mut chunks = Vec::new();
+        let result = bash_exec(
+            serde_json::json!({"command": "echo line1; echo line2; echo line3"}),
+            &mut |s| chunks.push(s.to_string()),
+        );
+        assert!(result.is_ok());
+        let combined: String = chunks.concat();
+        assert!(
+            combined.contains("line1"),
+            "streamed output should contain line1: {combined}"
+        );
+        assert!(
+            combined.contains("line3"),
+            "streamed output should contain line3: {combined}"
+        );
+        assert!(!chunks.is_empty(), "callback should have been called");
+    }
+
+    #[test]
+    fn bash_streamed_matches_returned() {
+        // The accumulated result returned to the API must match what was streamed
+        let mut streamed = String::new();
+        let result = bash_exec(
+            serde_json::json!({"command": "echo hello && echo world"}),
+            &mut |s| streamed.push_str(s),
+        );
+        let returned = result.unwrap();
+        assert_eq!(
+            returned,
+            streamed.trim(),
+            "returned result should match streamed content"
+        );
+    }
+
+    #[test]
+    fn bash_streams_only_stdout_not_stderr() {
+        let mut chunks = Vec::new();
+        let result = bash_exec(
+            serde_json::json!({"command": "echo visible; echo hidden >&2"}),
+            &mut |s| chunks.push(s.to_string()),
+        );
+        assert!(result.is_ok());
+        let streamed: String = chunks.concat();
+        assert!(
+            streamed.contains("visible"),
+            "stdout should be streamed: {streamed}"
+        );
+        assert!(
+            !streamed.contains("hidden"),
+            "stderr should not be streamed to callback: {streamed}"
+        );
+        // But stderr should still be in the returned result
+        let output = result.unwrap();
+        assert!(
+            output.contains("hidden"),
+            "stderr should be in returned output: {output}"
+        );
+    }
+
+    #[test]
+    fn dispatch_streams_bash_output() {
+        let mut chunks = Vec::new();
+        let block = dispatch_tool(
+            "bash",
+            serde_json::json!({"command": "echo streamed"}),
+            "stream-test",
+            &mut |s| chunks.push(s.to_string()),
+        );
+        if let ContentBlock::ToolResult { is_error, .. } = &block {
+            assert!(is_error.is_none(), "should succeed");
+        }
+        let combined: String = chunks.concat();
+        assert!(
+            combined.contains("streamed"),
+            "dispatch_tool should forward bash streaming: {combined}"
         );
     }
 }

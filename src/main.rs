@@ -28,12 +28,13 @@ fn build_system_prompt() -> String {
          - Working directory resets each call — use cwd param or absolute paths.\n\
          - Never run destructive ops (rm -rf, force push, reset --hard) without user approval.\n\
          \n\
-         edit_file(path, old_str, new_str): Surgical text replacement.\n\
-         - old_str must match EXACTLY once (whitespace, indentation, everything).\n\
+         edit_file(path, old_str, new_str, replace_all?): Surgical text replacement.\n\
+         - old_str must match EXACTLY once unless replace_all=true.\n\
+         - replace_all=true: replaces every occurrence (for renames, bulk changes).\n\
          - old_str != new_str (no-op rejected).\n\
          - Empty old_str + existing file = append. Empty old_str + missing file = create (with mkdir).\n\
          - On 'not found': re-read the file — likely whitespace/indentation mismatch.\n\
-         - On 'found N times': include more surrounding context to make old_str unique.\n\
+         - On 'found N times': include more context to make unique, or use replace_all.\n\
          - Always verify: read_file after editing to confirm the change.\n\
          \n\
          code_search(pattern, path?, file_type?, case_sensitive?): Wraps ripgrep.\n\
@@ -278,7 +279,9 @@ async fn main() {
                     } else {
                         eprintln!("{c}tool{r}: {name}");
                     }
-                    let result = dispatch_tool(name, input.clone(), id);
+                    let result = dispatch_tool(name, input.clone(), id, &mut |chunk| {
+                        eprint!("{chunk}");
+                    });
                     if let ContentBlock::ToolResult {
                         ref content,
                         ref is_error,
