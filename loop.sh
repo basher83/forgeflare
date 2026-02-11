@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ralph Wiggum Loop — Rust Coding Agent
-# Usage: ./loop.sh [--json] [plan|plan-work "description"] [max_iterations]
+# Usage: ./loop.sh [--json] [plan|plan-work "description"|task "description"] [max_iterations]
 # Examples:
 #   ./loop.sh              # Build mode, human output, unlimited
 #   ./loop.sh --json       # Build mode, JSON output
@@ -9,6 +9,8 @@
 #   ./loop.sh plan 5       # Plan mode, max 5 iterations
 #   ./loop.sh --json plan  # Plan mode, JSON output
 #   ./loop.sh plan-work "user auth with OAuth"  # Scoped plan for work branch
+#   ./loop.sh task "implement release-workflow.md spec"  # Task mode, scoped to one task
+#   ./loop.sh task "fix PKCE verifier length" 3  # Task mode, max 3 iterations
 
 # Parse --json flag
 OUTPUT_FORMAT=""
@@ -18,7 +20,17 @@ if [ "$1" = "--json" ]; then
 fi
 
 # Parse mode and iterations
-if [ "$1" = "plan-work" ]; then
+if [ "$1" = "task" ]; then
+    if [ -z "$2" ]; then
+        echo "Error: task requires a description or spec path"
+        echo "Usage: ./loop.sh task \"description of the task\" [max_iterations]"
+        exit 1
+    fi
+    MODE="task"
+    PROMPT_FILE="PROMPT_build.md"
+    TASK_DESC="$2"
+    MAX_ITERATIONS=${3:-0}
+elif [ "$1" = "plan-work" ]; then
     if [ -z "$2" ]; then
         echo "Error: plan-work requires a work description"
         echo "Usage: ./loop.sh plan-work \"description of the work\""
@@ -97,6 +109,7 @@ echo "Mode:   $MODE"
 echo "Prompt: $PROMPT_FILE"
 echo "Output: ${OUTPUT_FORMAT:-human}"
 echo "Branch: $CURRENT_BRANCH"
+[ "$MODE" = "task" ] && echo "Task:   $TASK_DESC"
 [ "$MODE" = "plan-work" ] && echo "Scope:  $WORK_SCOPE"
 [ $MAX_ITERATIONS -gt 0 ] && echo "Max:    $MAX_ITERATIONS iterations"
 echo "Stop:   Ctrl+C"
@@ -109,12 +122,28 @@ if [ ! -f "$PROMPT_FILE" ]; then
 fi
 
 while true; do
+    # Task mode: exit when TASK.md has been deleted (agent signals completion)
+    if [ "$MODE" = "task" ] && [ $ITERATION -gt 0 ] && [ ! -f TASK.md ]; then
+        echo "Task complete — TASK.md deleted by agent."
+        break
+    fi
+
+    # Create TASK.md at start (first iteration only)
+    if [ "$MODE" = "task" ] && [ $ITERATION -eq 0 ]; then
+        echo "$TASK_DESC" > TASK.md
+        echo "Created TASK.md"
+    fi
+
     if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
         echo "Reached max iterations: $MAX_ITERATIONS"
         if [ "$MODE" = "plan-work" ]; then
             echo ""
             echo "Scoped plan created for: $WORK_SCOPE"
             echo "To build: ./loop.sh"
+        fi
+        if [ "$MODE" = "task" ] && [ -f TASK.md ]; then
+            echo ""
+            echo "⚠  TASK.md still exists — task may be incomplete."
         fi
         break
     fi
@@ -128,25 +157,33 @@ while true; do
     if [ "$MODE" = "plan-work" ]; then
         envsubst < "$PROMPT_FILE" | claude -p \
             --dangerously-skip-permissions \
-            $OUTPUT_FORMAT \
+            ${OUTPUT_FORMAT:+"$OUTPUT_FORMAT"} \
             --model opus \
             --verbose &
     else
-        cat "$PROMPT_FILE" | claude -p \
+        claude -p \
             --dangerously-skip-permissions \
-            $OUTPUT_FORMAT \
+            ${OUTPUT_FORMAT:+"$OUTPUT_FORMAT"} \
             --model opus \
-            --verbose &
+            --verbose \
+            < "$PROMPT_FILE" &
     fi
     CLAUDE_PID=$!
     wait $CLAUDE_PID
+    EXIT_CODE=$?
     CLAUDE_PID=""
 
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "⚠  Claude exited with code $EXIT_CODE (iteration $((ITERATION + 1)))"
+    fi
+
     # Push changes after each iteration
-    git push origin "$CURRENT_BRANCH" 2>/dev/null || {
-        echo "Creating remote branch..."
-        git push -u origin "$CURRENT_BRANCH"
-    }
+    if ! git push origin "$CURRENT_BRANCH" 2>/dev/null; then
+        if ! git push -u origin "$CURRENT_BRANCH" 2>/dev/null; then
+            echo "⚠  git push failed (iteration $((ITERATION + 1)))"
+            echo "   Local commits accumulating — check auth/network."
+        fi
+    fi
 
     # Convergence detection (build mode only)
     if [ "$MODE" = "build" ] && [ -f ".claude/hooks/convergence-check.sh" ]; then

@@ -284,3 +284,4 @@ The specification has been updated to reflect implementation decisions:
 [x] wait-timeout dependency eliminated (try_wait + Instant deadline)
 [x] dispatch_tool hand-written (macro generates schemas only) for per-tool signatures
 [x] 135 unit tests (originally 126; +4 streaming, +5 replace_all)
+[x] Release workflow: tag-triggered cross-platform builds (macOS aarch64 + Linux x86_64), CI gate via workflow_call, pinned action SHAs, least-privilege permissions, auto-generated release notes
