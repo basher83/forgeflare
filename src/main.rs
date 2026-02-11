@@ -1,4 +1,5 @@
 mod api;
+mod session;
 mod tools;
 
 use api::{AnthropicClient, ContentBlock, Message, Role, StopReason, color};
@@ -162,6 +163,10 @@ async fn main() {
     });
     let schemas = all_tool_schemas();
     let system_prompt = build_system_prompt();
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".into());
+    let mut session = session::Session::new(&cwd, &cli.model);
     if cli.verbose {
         eprintln!("[verbose] Initialized {} tools", schemas.len());
     }
@@ -207,6 +212,7 @@ async fn main() {
             role: Role::User,
             content: vec![ContentBlock::Text { text: input }],
         });
+        session.append_user_turn(conversation.last().unwrap());
         let mut tool_iterations = 0usize;
         loop {
             if tool_iterations >= MAX_TOOL_ITERATIONS {
@@ -222,7 +228,7 @@ async fn main() {
                 eprintln!("[verbose] Sending message, conversation len: {n}");
             }
             trim_conversation(&mut conversation, MAX_CONVERSATION_BYTES);
-            let (response, stop_reason) = match client
+            let (response, stop_reason, usage) = match client
                 .send_message(
                     &conversation,
                     &schemas,
@@ -248,6 +254,7 @@ async fn main() {
                 role: Role::Assistant,
                 content: response,
             });
+            session.append_assistant_turn(conversation.last().unwrap(), &usage);
             if stop_reason != StopReason::ToolUse {
                 if stop_reason == StopReason::MaxTokens {
                     let (c, r) = (color("\x1b[93m"), color("\x1b[0m"));
@@ -316,8 +323,10 @@ async fn main() {
                 role: Role::User,
                 content: tool_results,
             });
+            session.append_user_turn(conversation.last().unwrap());
         }
     }
+    session.write_supporting_files(&conversation);
 }
 
 #[cfg(test)]

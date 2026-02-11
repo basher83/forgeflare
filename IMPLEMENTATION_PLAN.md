@@ -2,21 +2,22 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety and robust SSE error handling. The codebase has ~900 production lines across 3 source files with 135 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety, robust SSE error handling, and session capture. The codebase has ~1030 production lines across 4 source files with 150 unit tests.
 
-Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. Bash tool streams output in real time via channel-based streaming (mpsc channels, 50ms polling loop, callback-based output). edit_file supports replace_all for bulk replacements. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention.
+Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. Bash tool streams output in real time via channel-based streaming (mpsc channels, 50ms polling loop, callback-based output). edit_file supports replace_all for bulk replacements. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention. Session capture writes Entire-compatible JSONL transcripts incrementally to .entire/metadata/{session-id}/full.jsonl with token usage tracking and supporting files (prompt.txt, context.md).
 
 Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bombs, dd to block devices including /dev/sd, /dev/nvme, /dev/vd, /dev/hd, mkfs, chmod 777, git push --force, git push -f) with whitespace normalization and expanded flag ordering coverage. Redirect-to-device patterns cover all four device families. Timeout drain thread leak fixed. walk() has depth limit (MAX_WALK_DEPTH=20) and skips permission-denied entries. SSE parser validates tool_use blocks have non-empty id/name fields. search_exec applies 50-line cap before 100KB byte cap.
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 135 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 150 unit tests.
 
 File structure:
 - src/main.rs (~320 production lines)
 - src/api.rs (~254 production lines)
 - src/tools/mod.rs (~330 production lines)
-- Total: ~904 production lines
+- src/session.rs (~125 production lines)
+- Total: ~1029 production lines
 
 ## Architectural Decisions
 
@@ -170,6 +171,16 @@ Bash output memory is bounded by channel accumulation caps, not reader-side limi
 
 Bash command guard must block `git push --force` and `git push -f`. The system prompt instructs the model "Never run destructive ops (force push, reset --hard) without user approval" but soft instructions are not enforcement. Force-pushing can permanently destroy shared repository history (once the remote garbage-collects old refs). The `--force-with-lease` variant is also blocked as a false positive due to substring matching — this is an acceptable tradeoff since false positives for destructive operations are better than false negatives. The error message clearly identifies the blocked pattern so users can adjust.
 
+Session capture is incremental append-only (survives crashes). Each turn appended via OpenOptions::append. No file handle kept across session.
+
+TranscriptLine uses borrowed references (&'a str) to avoid cloning session metadata on every append. Only the uuid is owned (freshly generated each time).
+
+chrono with `clock` feature + no default-features is sufficient for UTC timestamps. `to_rfc3339_opts(SecondsFormat::Secs, true)` produces the compact ISO 8601 format.
+
+uuid crate v1 with v4 feature. Single dependency, RFC 4122 compliant. Alternative (manual hex formatting) not worth the effort.
+
+context.md key actions extraction iterates tool_use blocks and takes the first argument value via serde_json object iteration order. This matches Entire's observed format.
+
 `edit_file` must detect binary files before attempting string operations. Without binary detection, `fs::read_to_string` on a binary file produces a cryptic UTF-8 error instead of a clear "binary file" message. The fix: extract a shared `read_text_file` helper that both `read_exec` and `edit_exec` call. The helper performs the metadata size check, raw read, null-byte binary detection (first 8KB), and UTF-8 conversion. This eliminates duplication (DRY) between the two functions while adding binary safety to edits. Line-count neutral thanks to the shared extraction.
 
 `search_exec` must use `--` separator before pattern argument. Without it, patterns starting with `-` (like `--help`, `-v`, `-e`) are interpreted as rg flags instead of search patterns. `--help` as a pattern caused rg to print its help text and exit 0, returning rg's manual as "search results". `-e` caused rg to treat the next argument (the path) as the pattern and wait on stdin. The `--` separator is standard POSIX convention for ending option processing.
@@ -181,19 +192,6 @@ Bash command guard must block `git push --force` and `git push -f`. The system p
 `truncate_oversized_blocks` char boundary panic. The original code used `(keep..text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(keep)` to find a safe truncation point. When `keep` falls on the second byte of a multi-byte UTF-8 character (e.g., 'é' = 0xC3 0xA9) near the end of a string, the exclusive range `keep..text.len()` can miss `text.len()` as a valid boundary, `find` returns `None`, and `unwrap_or(keep)` returns a non-boundary index. `String::truncate` panics. Fixed by using `text.floor_char_boundary(keep)` — the same approach already used in `truncate_with_marker` in tools/mod.rs. 1 new test.
 
 Bash drain `read_to_string` silently discards non-UTF-8 output. The `drain` helper in `bash_exec` used `read_to_string` on subprocess stdout/stderr. When a command emits non-UTF-8 bytes (binary tools, locale issues, `git diff` on binary files), `read_to_string` returns an error at the first invalid byte, and the `let _ =` discards it — silently losing all output after the invalid byte. Fixed by reading into `Vec<u8>` with `read_to_end` and converting with `String::from_utf8_lossy`, which replaces invalid bytes with U+FFFD. 1 new test.
-
-## Priority: Session Transcript Persistence
-
-Spec: `specs/session-capture.md`. Emit Entire-compatible JSONL transcripts for post-session observability.
-
-Changes required:
-1. `api.rs` — parse `usage` from `message_start` and `message_delta` SSE events, return as third element from `send_message()` (currently returns `(Vec<ContentBlock>, StopReason)`, needs `(Vec<ContentBlock>, StopReason, Usage)`)
-2. `main.rs` — generate session ID at startup (date-uuid format), append JSONL after each turn, write supporting files (prompt.txt, context.md) at exit
-3. New session transcript module — JSONL line struct, file I/O, context.md generation
-4. `Cargo.toml` — add `uuid` crate (v4 feature) for session ID generation
-5. Add `Serialize` derive to `StopReason` enum
-
-The conversation `Vec<Message>` already derives Serialize. The JSONL line is a wrapper struct with session metadata plus the existing Message. Token usage is already in the SSE stream — the parser just doesn't extract it yet.
 
 ## Future Work
 
@@ -241,6 +239,8 @@ The specification has been updated to reflect implementation decisions:
 - wait-timeout dependency eliminated. try_wait() + Instant::now() deadline in the polling loop replaces wait_timeout(). One fewer external dependency.
 - Working directory state evaluated and rejected. 3% context savings from shorter paths doesn't justify hidden state in an engine designed for debuggability in autonomous loops. The existing cwd parameter on bash covers the main pain point. Other tools naturally use paths from prior results.
 - Production line counting: main.rs ~320 + api.rs ~254 + tools/mod.rs ~330 = ~904 total (increase from streaming rewrite and replace_all logic).
+- Session capture (specs/session-capture.md) fully implemented. JSONL transcript, token usage from SSE, session identity (date-uuid), timestamps (UTC ISO 8601), supporting files (prompt.txt, context.md). 12 new session tests + 3 new SSE usage/serialization tests.
+- Dependencies: reqwest 0.13, thiserror 2, futures-util 0.3, serde/serde_json, tokio, clap, uuid 1, chrono 0.4.
 
 ## Verification Checklist
 
@@ -263,7 +263,7 @@ The specification has been updated to reflect implementation decisions:
 [x] code_search: surfaces actionable error when rg is not installed
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (135 unit tests)
+[x] cargo fmt/clippy/build/test passes (150 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -290,11 +290,17 @@ The specification has been updated to reflect implementation decisions:
 [x] search_exec: `--` separator prevents dash-prefixed patterns from being treated as rg flags
 [x] Bash command guard: redirect-to-device patterns cover all four device families (/dev/sd, /dev/nvme, /dev/vd, /dev/hd)
 [x] list_files schema description includes .devenv in skip list
-[x] ~904 production lines (~320 main.rs + ~254 api.rs + ~330 tools/mod.rs)
+[x] ~1029 production lines (~320 main.rs + ~254 api.rs + ~330 tools/mod.rs + ~125 session.rs)
 [x] Bash streaming: channel-based output streaming via mpsc + polling loop + callback
 [x] Bash timeout: partial output preserved (was silently discarded)
 [x] edit_file replace_all: optional boolean for bulk replacements
 [x] wait-timeout dependency eliminated (try_wait + Instant deadline)
 [x] dispatch_tool hand-written (macro generates schemas only) for per-tool signatures
-[x] 135 unit tests (originally 126; +4 streaming, +5 replace_all)
+[x] 150 unit tests (originally 126; +4 streaming, +5 replace_all, +12 session, +3 SSE usage)
+[x] Session capture: JSONL transcript written incrementally to .entire/metadata/{session-id}/full.jsonl
+[x] Token usage parsed from message_start (input_tokens, cache) and message_delta (output_tokens) SSE events
+[x] Session ID: date-uuid format, UUID v4 via uuid crate
+[x] Usage struct returned as third element from send_message()
+[x] StopReason derives Serialize (serde rename_all = "snake_case")
+[x] Supporting files: prompt.txt (first user input), context.md (session metadata + key actions)
 [x] Release workflow: tag-triggered cross-platform builds (macOS aarch64 + Linux x86_64), CI gate via workflow_call, pinned action SHAs, least-privilege permissions, auto-generated release notes

@@ -29,14 +29,15 @@ Binary: `forgeflare`
 ```
 src/
   main.rs         — CLI loop, user interface, system prompt (build_system_prompt)
-  api.rs          — Anthropic client (reqwest + SSE)
+  api.rs          — Anthropic client (reqwest + SSE), Usage struct
+  session.rs      — Session transcript persistence (Entire-compatible JSONL)
   tools/mod.rs    — 5 tools: read, list, bash (streaming), edit (replace_all), search
 .github/workflows/
   ci.yml          — CI pipeline: lint, audit, test, build (4 parallel jobs)
   release.yml     — Release builds: macOS aarch64 + Linux x86_64 tarballs (tag-triggered)
 ```
 
-135 tests
+150 tests
 
 ## CI/CD
 
@@ -44,4 +45,4 @@ Workflow validation: review YAML structure against `specs/release-workflow.md`. 
 
 ## Dependencies
 
-reqwest 0.13, thiserror 2, futures-util 0.3, serde/serde_json, tokio, clap
+reqwest 0.13, thiserror 2, futures-util 0.3, serde/serde_json, tokio, clap, uuid 1, chrono 0.4

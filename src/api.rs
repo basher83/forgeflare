@@ -22,11 +22,24 @@ pub enum AgentError {
     StreamParse(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +82,7 @@ struct SseParser {
     fragments: Vec<String>,
     stop_reason: Option<StopReason>,
     message_complete: bool,
+    usage: Usage,
 }
 
 impl SseParser {
@@ -154,12 +168,29 @@ impl SseParser {
                     println!();
                 }
             }
-            "message_delta" => match p["delta"]["stop_reason"].as_str() {
-                Some("end_turn") => self.stop_reason = Some(StopReason::EndTurn),
-                Some("tool_use") => self.stop_reason = Some(StopReason::ToolUse),
-                Some("max_tokens") => self.stop_reason = Some(StopReason::MaxTokens),
-                _ => {}
-            },
+            "message_start" => {
+                let u = &p["message"]["usage"];
+                if let Some(n) = u["input_tokens"].as_u64() {
+                    self.usage.input_tokens = n;
+                }
+                if let Some(n) = u["cache_creation_input_tokens"].as_u64() {
+                    self.usage.cache_creation_input_tokens = n;
+                }
+                if let Some(n) = u["cache_read_input_tokens"].as_u64() {
+                    self.usage.cache_read_input_tokens = n;
+                }
+            }
+            "message_delta" => {
+                match p["delta"]["stop_reason"].as_str() {
+                    Some("end_turn") => self.stop_reason = Some(StopReason::EndTurn),
+                    Some("tool_use") => self.stop_reason = Some(StopReason::ToolUse),
+                    Some("max_tokens") => self.stop_reason = Some(StopReason::MaxTokens),
+                    _ => {}
+                }
+                if let Some(n) = p["usage"]["output_tokens"].as_u64() {
+                    self.usage.output_tokens = n;
+                }
+            }
             "message_stop" => self.message_complete = true,
             "error" => {
                 let msg = p["error"]["message"]
@@ -172,14 +203,14 @@ impl SseParser {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
+    fn finish(mut self) -> Result<(Vec<ContentBlock>, StopReason, Usage), AgentError> {
         self.blocks
             .retain(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()));
         let stop = self
             .stop_reason
             .or(self.message_complete.then_some(StopReason::EndTurn))
             .ok_or_else(|| AgentError::StreamParse("stream ended without stop_reason".into()))?;
-        Ok((self.blocks, stop))
+        Ok((self.blocks, stop, self.usage))
     }
 }
 
@@ -205,7 +236,7 @@ impl AnthropicClient {
         model: &str,
         system_prompt: &str,
         max_tokens: u32,
-    ) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
+    ) -> Result<(Vec<ContentBlock>, StopReason, Usage), AgentError> {
         let body = serde_json::json!({
             "model": model, "max_tokens": max_tokens, "stream": true,
             "system": system_prompt,
@@ -417,7 +448,7 @@ mod tests {
     // --- SSE parser tests ---
 
     /// Helper: feed lines into an SseParser and return the result.
-    fn parse_sse(lines: &[&str]) -> Result<(Vec<ContentBlock>, StopReason), AgentError> {
+    fn parse_sse(lines: &[&str]) -> Result<(Vec<ContentBlock>, StopReason, Usage), AgentError> {
         let mut parser = SseParser::default();
         for line in lines {
             parser.process_line(line)?;
@@ -427,7 +458,7 @@ mod tests {
 
     #[test]
     fn sse_text_response() {
-        let (blocks, stop) = parse_sse(&[
+        let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             r#"event: content_block_delta"#,
@@ -449,7 +480,7 @@ mod tests {
 
     #[test]
     fn sse_tool_use_response() {
-        let (blocks, stop) = parse_sse(&[
+        let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
             r#"event: content_block_delta"#,
@@ -477,7 +508,7 @@ mod tests {
 
     #[test]
     fn sse_mixed_text_and_tool() {
-        let (blocks, stop) = parse_sse(&[
+        let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             r#"event: content_block_delta"#,
@@ -504,7 +535,7 @@ mod tests {
     fn sse_unknown_block_type_filtered() {
         // Unknown block types (like thinking) should produce placeholder blocks
         // that are filtered out in finish()
-        let (blocks, stop) = parse_sse(&[
+        let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
             r#"event: content_block_stop"#,
@@ -527,7 +558,7 @@ mod tests {
     #[test]
     fn sse_missing_index_skipped() {
         // Delta events without an index field should be silently skipped
-        let (blocks, _) = parse_sse(&[
+        let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             r#"event: content_block_delta"#,
@@ -547,7 +578,7 @@ mod tests {
     #[test]
     fn sse_out_of_bounds_index_safe() {
         // Index beyond blocks array should not panic
-        let (blocks, _) = parse_sse(&[
+        let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             r#"event: content_block_delta"#,
@@ -593,7 +624,7 @@ mod tests {
     #[test]
     fn sse_message_stop_fallback() {
         // message_stop without message_delta should default to EndTurn
-        let (_, stop) = parse_sse(&[
+        let (_, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             r#"event: content_block_delta"#,
@@ -609,7 +640,7 @@ mod tests {
 
     #[test]
     fn sse_max_tokens_stop() {
-        let (_, stop) = parse_sse(&[
+        let (_, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             r#"event: content_block_delta"#,
@@ -623,7 +654,7 @@ mod tests {
 
     #[test]
     fn sse_corrupt_tool_json_produces_null_input() {
-        let (blocks, _) = parse_sse(&[
+        let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
             r#"event: content_block_delta"#,
@@ -656,7 +687,7 @@ mod tests {
         parser
             .process_line(r#"data: {"type":"message_stop"}"#)
             .unwrap();
-        let (blocks, stop) = parser.finish().unwrap();
+        let (blocks, stop, _usage) = parser.finish().unwrap();
         assert_eq!(stop, StopReason::EndTurn);
         assert!(blocks.is_empty());
     }
@@ -688,7 +719,7 @@ mod tests {
         parser
             .process_line(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
             .unwrap();
-        let (blocks, stop) = parser.finish().unwrap();
+        let (blocks, stop, _usage) = parser.finish().unwrap();
         assert_eq!(stop, StopReason::EndTurn);
         assert_eq!(blocks.len(), 1);
         assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "hi"));
@@ -703,14 +734,14 @@ mod tests {
         parser
             .process_line(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
             .unwrap();
-        let (_, stop) = parser.finish().unwrap();
+        let (_, stop, _usage) = parser.finish().unwrap();
         assert_eq!(stop, StopReason::EndTurn);
     }
 
     #[test]
     fn sse_tool_use_empty_id_filtered() {
         // A tool_use block with empty id should be treated as corrupt and filtered out
-        let (blocks, stop) = parse_sse(&[
+        let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"","name":"bash"}}"#,
             r#"event: content_block_stop"#,
@@ -733,7 +764,7 @@ mod tests {
     #[test]
     fn sse_tool_use_empty_name_filtered() {
         // A tool_use block with empty name should be treated as corrupt and filtered out
-        let (blocks, _) = parse_sse(&[
+        let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":""}}"#,
             r#"event: content_block_stop"#,
@@ -749,7 +780,7 @@ mod tests {
     #[test]
     fn sse_tool_use_missing_id_filtered() {
         // A tool_use block with no id field should be treated as corrupt
-        let (blocks, _) = parse_sse(&[
+        let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"bash"}}"#,
             r#"event: content_block_stop"#,
@@ -764,7 +795,7 @@ mod tests {
     #[test]
     fn sse_content_block_stop_oob_index_safe() {
         // content_block_stop with an out-of-bounds index should not panic or corrupt data
-        let (blocks, stop) = parse_sse(&[
+        let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
             r#"event: content_block_delta"#,
@@ -789,5 +820,63 @@ mod tests {
         } else {
             panic!("expected ToolUse");
         }
+    }
+
+    #[test]
+    fn sse_usage_parsed_from_message_start_and_delta() {
+        let (_, _, usage) = parse_sse(&[
+            r#"event: message_start"#,
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_creation_input_tokens":50,"cache_read_input_tokens":800}}}"#,
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":350}}"#,
+            r#"event: message_stop"#,
+            r#"data: {"type":"message_stop"}"#,
+        ])
+        .unwrap();
+        assert_eq!(usage.input_tokens, 1200);
+        assert_eq!(usage.output_tokens, 350);
+        assert_eq!(usage.cache_creation_input_tokens, 50);
+        assert_eq!(usage.cache_read_input_tokens, 800);
+    }
+
+    #[test]
+    fn sse_usage_defaults_when_absent() {
+        let (_, _, usage) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"event: content_block_delta"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ])
+        .unwrap();
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+        assert_eq!(usage.cache_read_input_tokens, 0);
+    }
+
+    #[test]
+    fn stop_reason_serialization() {
+        assert_eq!(
+            serde_json::to_string(&StopReason::EndTurn).unwrap(),
+            r#""end_turn""#
+        );
+        assert_eq!(
+            serde_json::to_string(&StopReason::ToolUse).unwrap(),
+            r#""tool_use""#
+        );
+        assert_eq!(
+            serde_json::to_string(&StopReason::MaxTokens).unwrap(),
+            r#""max_tokens""#
+        );
     }
 }
