@@ -182,6 +182,19 @@ Bash command guard must block `git push --force` and `git push -f`. The system p
 
 Bash drain `read_to_string` silently discards non-UTF-8 output. The `drain` helper in `bash_exec` used `read_to_string` on subprocess stdout/stderr. When a command emits non-UTF-8 bytes (binary tools, locale issues, `git diff` on binary files), `read_to_string` returns an error at the first invalid byte, and the `let _ =` discards it — silently losing all output after the invalid byte. Fixed by reading into `Vec<u8>` with `read_to_end` and converting with `String::from_utf8_lossy`, which replaces invalid bytes with U+FFFD. 1 new test.
 
+## Priority: Session Transcript Persistence
+
+Spec: `specs/session-capture.md`. Emit Entire-compatible JSONL transcripts for post-session observability.
+
+Changes required:
+1. `api.rs` — parse `usage` from `message_start` and `message_delta` SSE events, return as third element from `send_message()` (currently returns `(Vec<ContentBlock>, StopReason)`, needs `(Vec<ContentBlock>, StopReason, Usage)`)
+2. `main.rs` — generate session ID at startup (date-uuid format), append JSONL after each turn, write supporting files (prompt.txt, context.md) at exit
+3. New session transcript module — JSONL line struct, file I/O, context.md generation
+4. `Cargo.toml` — add `uuid` crate (v4 feature) for session ID generation
+5. Add `Serialize` derive to `StopReason` enum
+
+The conversation `Vec<Message>` already derives Serialize. The JSONL line is a wrapper struct with session metadata plus the existing Message. Token usage is already in the SSE stream — the parser just doesn't extract it yet.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
