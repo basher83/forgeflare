@@ -24,6 +24,7 @@ Pre-built binaries for macOS (Apple Silicon) and Linux (x86_64) are available on
 ```bash
 tar xzf forgeflare-v*-<target>.tar.gz
 sudo mv forgeflare /usr/local/bin/
+xattr -d com.apple.quarantine /usr/local/bin/forgeflare
 ```
 
 Or build from source:
