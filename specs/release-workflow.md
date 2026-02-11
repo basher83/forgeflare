@@ -19,9 +19,9 @@
 - Each target runs the test suite before packaging to catch platform-specific failures
 
 **R3. Artifact Packaging**
-- Binary name: `agent` (from `[[bin]]` in Cargo.toml)
-- Tarball per target: `agent-{tag}-{target}.tar.gz`
-- Tarball contents: the `agent` binary only (no docs, no config, no extras)
+- Binary name: `forgeflare` (from `[[bin]]` in Cargo.toml)
+- Tarball per target: `forgeflare-{tag}-{target}.tar.gz`
+- Tarball contents: the `forgeflare` binary only (no docs, no config, no extras)
 - Compression: gzip
 
 **R4. GitHub Release**

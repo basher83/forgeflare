@@ -1,5 +1,5 @@
 [package]
-name = "rust-coding-agent"
+name = "forgeflare"
 version = "0.0.0"
 edition = "2024"
 
@@ -16,5 +16,5 @@ futures-util = "0.3"
 tempfile = "3"
 
 [[bin]]
-name = "agent"
+name = "forgeflare"
 path = "src/main.rs"

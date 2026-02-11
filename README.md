@@ -17,19 +17,35 @@ The agent exposes five tools to Claude:
 - `bash` -- shell command execution with real-time output streaming (120 s timeout, 100 KB output cap, blocked destructive patterns)
 - `code_search` -- regex search via ripgrep (50-match limit, file type filtering)
 
+## Install
+
+Pre-built binaries for macOS (Apple Silicon) and Linux (x86_64) are available on the [releases page](https://github.com/basher83/forgeflare/releases/latest). Download the tarball for your platform, extract, and put `forgeflare` on your PATH:
+
+```bash
+tar xzf forgeflare-v*-<target>.tar.gz
+sudo mv forgeflare /usr/local/bin/
+```
+
+Or build from source:
+
+```bash
+cargo build --release
+# Binary at target/release/forgeflare
+```
+
 ## Quick Start
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-cargo run
+forgeflare
 ```
 
-Accepts interactive input or piped prompts (`echo "explain main.rs" | cargo run`).
+Accepts interactive input or piped prompts (`echo "explain main.rs" | forgeflare`).
 
 ## Usage
 
 ```yaml
-agent [OPTIONS]
+forgeflare [OPTIONS]
 
 Options:
   --model <MODEL>          Claude model [default: claude-opus-4-6]

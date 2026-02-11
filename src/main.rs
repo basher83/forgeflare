@@ -143,7 +143,7 @@ fn truncate_oversized_blocks(conversation: &mut [Message], max_bytes: usize) {
 }
 
 #[derive(Parser)]
-#[command(name = "agent", about = "Rust coding agent")]
+#[command(name = "forgeflare", about = "Rust coding agent")]
 struct Cli {
     #[arg(short, long)]
     verbose: bool,

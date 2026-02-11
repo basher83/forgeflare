@@ -38,12 +38,12 @@ jobs:
       - name: Package
         run: |
           tag="${GITHUB_REF_NAME}"
-          tar czf "agent-${tag}-${{ matrix.target }}.tar.gz" -C target/release agent
+          tar czf "forgeflare-${tag}-${{ matrix.target }}.tar.gz" -C target/release forgeflare
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: agent-${{ matrix.target }}
-          path: agent-*.tar.gz
+          name: forgeflare-${{ matrix.target }}
+          path: forgeflare-*.tar.gz
           retention-days: 1
 
   release:
@@ -66,4 +66,4 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
             --latest \
-            artifacts/agent-*.tar.gz
+            artifacts/forgeflare-*.tar.gz

@@ -22,7 +22,7 @@ cargo build --release
 cargo fmt --check && cargo clippy -- -D warnings && cargo test && cargo build
 ```
 
-Binary: `agent`
+Binary: `forgeflare`
 
 ## Project Structure
 
