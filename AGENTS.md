@@ -37,7 +37,7 @@ src/
   release.yml     — Release builds: macOS aarch64 + Linux x86_64 tarballs (tag-triggered)
 ```
 
-150 tests
+153 tests
 
 ## CI/CD
 

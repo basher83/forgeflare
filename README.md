@@ -5,7 +5,7 @@
 >
 > This software is experimental, unstable, and under active development. APIs will change without notice. Features may be incomplete or broken. There is no support, no documentation guarantees, and no warranty of any kind. Use at your own risk.
 
-A Rust coding agent that uses Claude to edit code, run commands, and search repositories through a stateful conversation loop. Single binary, ~900 lines of production code, 135 tests.
+A Rust coding agent that uses Claude to edit code, run commands, and search repositories through a stateful conversation loop. Single binary, ~900 lines of production code, 153 tests.
 
 ## Tools
 

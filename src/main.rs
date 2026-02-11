@@ -250,6 +250,12 @@ async fn main() {
                 let n = response.len();
                 eprintln!("[verbose] Received {n} blocks, stop: {stop_reason:?}");
             }
+            let mut response = response;
+            if response.is_empty() {
+                response.push(ContentBlock::Text {
+                    text: "(empty response)".into(),
+                });
+            }
             conversation.push(Message {
                 role: Role::Assistant,
                 content: response,
@@ -263,6 +269,11 @@ async fn main() {
                         msg.content.retain(|b| {
                             !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null())
                         });
+                        if msg.content.is_empty() {
+                            msg.content.push(ContentBlock::Text {
+                                text: "(truncated)".into(),
+                            });
+                        }
                     }
                 }
                 break;
@@ -717,5 +728,85 @@ mod tests {
             prompt.contains("Never edit blind"),
             "should contain safety rules"
         );
+    }
+
+    #[test]
+    fn empty_response_gets_placeholder() {
+        // When the SSE parser filters all content blocks (e.g., only thinking blocks),
+        // the response vec is empty. Pushing an empty content array as an Assistant
+        // message causes the API to reject subsequent requests with 400.
+        // The fix injects a placeholder text block.
+        let response: Vec<ContentBlock> = vec![];
+        let mut response = response;
+        if response.is_empty() {
+            response.push(ContentBlock::Text {
+                text: "(empty response)".into(),
+            });
+        }
+        let msg = Message {
+            role: Role::Assistant,
+            content: response,
+        };
+        assert_eq!(msg.content.len(), 1, "should have placeholder block");
+        assert!(
+            matches!(&msg.content[0], ContentBlock::Text { text } if text == "(empty response)")
+        );
+        // Verify it serializes to a valid API message (non-empty content array)
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(
+            !json["content"].as_array().unwrap().is_empty(),
+            "content array must not be empty"
+        );
+    }
+
+    #[test]
+    fn max_tokens_filter_preserves_non_empty_content() {
+        // When MaxTokens filters null-input tool_use blocks, remaining content is preserved
+        let mut msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "Let me check".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "read_file".into(),
+                    input: Value::Null,
+                },
+            ],
+        };
+        msg.content
+            .retain(|b| !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null()));
+        if msg.content.is_empty() {
+            msg.content.push(ContentBlock::Text {
+                text: "(truncated)".into(),
+            });
+        }
+        assert_eq!(msg.content.len(), 1);
+        assert!(matches!(&msg.content[0], ContentBlock::Text { text } if text == "Let me check"));
+    }
+
+    #[test]
+    fn max_tokens_filter_injects_placeholder_when_all_filtered() {
+        // When MaxTokens filtering removes ALL content blocks (only partial tool_use
+        // blocks with null input), the message would have an empty content array.
+        // The API rejects this with 400, so we inject a placeholder.
+        let mut msg = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "read_file".into(),
+                input: Value::Null,
+            }],
+        };
+        msg.content
+            .retain(|b| !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null()));
+        if msg.content.is_empty() {
+            msg.content.push(ContentBlock::Text {
+                text: "(truncated)".into(),
+            });
+        }
+        assert_eq!(msg.content.len(), 1, "should have placeholder");
+        assert!(matches!(&msg.content[0], ContentBlock::Text { text } if text == "(truncated)"));
     }
 }
