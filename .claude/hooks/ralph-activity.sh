@@ -1,11 +1,16 @@
 #!/bin/bash
-# ralph-activity.sh — PostToolUse hook for Bash, Write, Edit
+# ralph-activity.sh — PostToolUse + PostToolUseFailure hook for Bash, Write, Edit
 # Logs a one-line activity entry to ralph-activity.log for monitoring.
 # Tail this file in a tmux pane: tail -f .claude/ralph-activity.log
+#
+# PostToolUse fires on success only. PostToolUseFailure fires on failure.
+# Bash has no numeric exit code in the hook input — success/failure is
+# determined by which event fires.
 set -euo pipefail
 
 input=$(cat)
 tool_name=$(echo "$input" | jq -r '.tool_name // "?"')
+event=$(echo "$input" | jq -r '.hook_event_name // "PostToolUse"')
 timestamp=$(date '+%H:%M:%S')
 
 LOG_FILE="${CLAUDE_PROJECT_DIR:-.}/.claude/ralph-activity.log"
@@ -13,11 +18,10 @@ LOG_FILE="${CLAUDE_PROJECT_DIR:-.}/.claude/ralph-activity.log"
 case "$tool_name" in
   Bash)
     cmd=$(echo "$input" | jq -r '.tool_input.command // ""' | head -1 | cut -c1-100)
-    exit_code=$(echo "$input" | jq -r '.tool_result.exitCode // "?"')
-    if [ "$exit_code" = "0" ]; then
-      icon="✓"
+    if [ "$event" = "PostToolUseFailure" ]; then
+      icon="✗"
     else
-      icon="✗ ($exit_code)"
+      icon="✓"
     fi
     echo "$timestamp │ BASH │ $cmd │ $icon" >> "$LOG_FILE"
     ;;

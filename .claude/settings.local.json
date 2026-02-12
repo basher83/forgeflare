@@ -46,6 +46,18 @@
           }
         ]
       }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/ralph-activity.sh",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
