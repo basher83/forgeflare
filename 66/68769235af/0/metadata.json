@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.3",
+  "checkpoint_id": "6668769235af",
+  "session_id": "f34cc7c9-c243-46de-9e02-10474c5cae55",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-12T16:35:28.222566Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.toml",
+    "src/api.rs",
+    "src/main.rs"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 31,
+    "cache_creation_tokens": 89323,
+    "cache_read_tokens": 2221538,
+    "output_tokens": 290,
+    "api_call_count": 30
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-12T16:35:28.085637Z",
+    "agent_lines": 41,
+    "human_added": 17,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 58,
+    "agent_percentage": 70.6896551724138
+  },
+  "transcript_path": ".claude/projects/-Users-basher8383-dev-personal-ralph-forgeflare/f34cc7c9-c243-46de-9e02-10474c5cae55.jsonl"
+}
