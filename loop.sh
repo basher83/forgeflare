@@ -94,8 +94,8 @@ fi
 # Verify commits and pushes will work before burning loop iterations.
 # Interactive credential managers (1Password, gpg pinentry) block headless commits.
 check_git() {
-    # Can we commit? (catches signing issues, missing user.email, etc.)
-    if ! git commit --allow-empty --dry-run -m "preflight" >/dev/null 2>&1; then
+    # Can we commit? (catches missing user.name/email)
+    if ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
         return 1
     fi
     # Can we push? (catches auth issues, wrong remote URL, etc.)
