@@ -3,8 +3,11 @@
 ## Build & Run
 
 ```bash
-# Run
-ANTHROPIC_API_KEY=... cargo run -- [--verbose] [--model claude-opus-4-6]
+# Run (on tailnet, zero config)
+cargo run -- [--verbose] [--model claude-opus-4-6]
+
+# Run (direct API access)
+ANTHROPIC_API_KEY=sk-... cargo run -- --api-url https://api.anthropic.com [--verbose]
 
 # Test
 cargo test
@@ -37,7 +40,7 @@ src/
   release.yml     — Release builds: macOS aarch64 + Linux x86_64 tarballs (tag-triggered)
 ```
 
-153 tests
+155 tests
 
 ## CI/CD
 

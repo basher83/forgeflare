@@ -16,8 +16,6 @@ pub enum AgentError {
     Api(#[from] reqwest::Error),
     #[error("JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("ANTHROPIC_API_KEY not set")]
-    MissingApiKey,
     #[error("stream: {0}")]
     StreamParse(String),
 }
@@ -216,17 +214,22 @@ impl SseParser {
 
 pub struct AnthropicClient {
     client: reqwest::Client,
-    api_key: String,
+    api_url: String,
+    api_key: Option<String>,
 }
 
 impl AnthropicClient {
-    pub fn new() -> Result<Self, AgentError> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| AgentError::MissingApiKey)?;
+    pub fn new(api_url: &str) -> Result<Self, AgentError> {
+        let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
         let client = reqwest::ClientBuilder::new()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(300))
             .build()?;
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_url: api_url.into(),
+            api_key,
+        })
     }
 
     pub async fn send_message(
@@ -242,14 +245,15 @@ impl AnthropicClient {
             "system": system_prompt,
             "messages": messages, "tools": tools
         });
-        let response = self
+        let url = format!("{}/v1/messages", self.api_url);
+        let mut req = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await?;
+            .post(&url)
+            .header("anthropic-version", "2023-06-01");
+        if let Some(key) = &self.api_key {
+            req = req.header("x-api-key", key);
+        }
+        let response = req.json(&body).send().await?;
         if !response.status().is_success() {
             let status = response.status();
             let retry = response
@@ -878,5 +882,20 @@ mod tests {
             serde_json::to_string(&StopReason::MaxTokens).unwrap(),
             r#""max_tokens""#
         );
+    }
+
+    #[test]
+    fn client_stores_api_url() {
+        let client = AnthropicClient::new("https://example.com").unwrap();
+        assert_eq!(client.api_url, "https://example.com");
+    }
+
+    #[test]
+    fn client_api_key_from_env() {
+        // When ANTHROPIC_API_KEY is not set, api_key should be None
+        // (test environment typically doesn't have it set)
+        let client = AnthropicClient::new("https://example.com").unwrap();
+        let has_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
+        assert_eq!(client.api_key.is_some(), has_key);
     }
 }

@@ -2,7 +2,7 @@
 
 ## Current State
 
-All requirements (R1-R8) are fully implemented with hardened tool safety, robust SSE error handling, and session capture. The codebase has ~1030 production lines across 4 source files with 150 unit tests.
+All requirements (R1-R8) are fully implemented with hardened tool safety, robust SSE error handling, session capture, and configurable API endpoint. The codebase has ~1030 production lines across 4 source files with 155 unit tests.
 
 Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. Bash tool streams output in real time via channel-based streaming (mpsc channels, 50ms polling loop, callback-based output). edit_file supports replace_all for bulk replacements. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention. Session capture writes Entire-compatible JSONL transcripts incrementally to .entire/metadata/{session-id}/full.jsonl with token usage tracking and supporting files (prompt.txt, context.md).
 
@@ -10,7 +10,7 @@ Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bomb
 
 System prompt dynamically built at startup, injecting cwd and platform info with structured tool guidance. reqwest client has explicit timeouts (connect 30s, request 300s). Tool schema descriptions enriched with operational limits. Tool error display and result visibility in non-verbose mode.
 
-Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 150 unit tests.
+Build status: `cargo fmt --check` passes, `cargo clippy -- -D warnings` passes, `cargo build --release` passes, `cargo test` passes with 155 unit tests.
 
 File structure:
 - src/main.rs (~320 production lines)
@@ -171,6 +171,10 @@ Bash output memory is bounded by channel accumulation caps, not reader-side limi
 
 Bash command guard must block `git push --force` and `git push -f`. The system prompt instructs the model "Never run destructive ops (force push, reset --hard) without user approval" but soft instructions are not enforcement. Force-pushing can permanently destroy shared repository history (once the remote garbage-collects old refs). The `--force-with-lease` variant is also blocked as a false positive due to substring matching — this is an acceptable tradeoff since false positives for destructive operations are better than false negatives. The error message clearly identifies the blocked pattern so users can adjust.
 
+clap `env` feature is required for `#[arg(env = "...")]` support. The `derive` feature alone does not include environment variable binding. Adding `env` to the features list in Cargo.toml enables three-tier precedence (CLI > env > default) for free.
+
+`AnthropicClient::new()` signature change from `() -> Result` to `(&str) -> Result` removes the `MissingApiKey` error variant entirely. The API key becomes `Option<String>` from `std::env::var().ok()` — no error path needed. The conditional `x-api-key` header uses `if let Some(key) = &self.api_key` to avoid sending auth headers when using the OAuth proxy.
+
 Session capture is incremental append-only (survives crashes). Each turn appended via OpenOptions::append. No file handle kept across session.
 
 TranscriptLine uses borrowed references (&'a str) to avoid cloning session metadata on every append. Only the uuid is owned (freshly generated each time).
@@ -194,8 +198,6 @@ context.md key actions extraction iterates tool_use blocks and takes the first a
 Bash drain `read_to_string` silently discards non-UTF-8 output. The `drain` helper in `bash_exec` used `read_to_string` on subprocess stdout/stderr. When a command emits non-UTF-8 bytes (binary tools, locale issues, `git diff` on binary files), `read_to_string` returns an error at the first invalid byte, and the `let _ =` discards it — silently losing all output after the invalid byte. Fixed by reading into `Vec<u8>` with `read_to_end` and converting with `String::from_utf8_lossy`, which replaces invalid bytes with U+FFFD. 1 new test.
 
 ## Future Work
-
-**API endpoint configuration (specs/api-endpoint.md).** Route requests through configurable base URL, defaulting to tailnet OAuth proxy (`https://anthropic-oauth-proxy.tailfb3ea.ts.net`). Make `ANTHROPIC_API_KEY` optional — when unset, no auth header is sent (proxy injects Bearer token). Add `--api-url` CLI arg with `ANTHROPIC_API_URL` env var support. Changes: `api.rs` (struct fields, conditional header), `main.rs` (CLI arg), remove `MissingApiKey` error variant. ~15-20 lines of change.
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
 
@@ -236,13 +238,14 @@ The specification has been updated to reflect implementation decisions:
 - `truncate_oversized_blocks` uses `floor_char_boundary` instead of manual range search to prevent panic on multi-byte UTF-8 chars. 1 new test (126 total).
 - Bash drain uses `read_to_end` + `from_utf8_lossy` instead of `read_to_string` to preserve non-UTF-8 output. 1 new test.
 - Channel-based bash streaming replaces drain-and-wait with mpsc channels + polling loop. Reader threads send 4KB chunks; polling loop drains and forwards stdout to caller via `on_output: &mut dyn FnMut(&str)` callback. Eliminates wait-timeout dependency. Partial output preserved on timeout. 4 new streaming tests (130 total).
+- API endpoint configuration (specs/api-endpoint.md) fully implemented. AnthropicClient gains api_url: String and api_key: Option<String>. MissingApiKey error removed. CLI --api-url with env var support. Default URL: tailnet OAuth proxy. 2 new tests (155 total).
 - edit_file replace_all parameter: optional boolean, default false. When true, uses str::replace instead of replacen(..., 1), skips uniqueness check, reports occurrence count. Error message for duplicates now hints at replace_all. 5 new tests (135 total).
 - tools! macro split: macro now generates only all_tool_schemas(). dispatch_tool() is hand-written so bash can receive a streaming callback while other tools keep their original signatures. This avoids threading a useless parameter through 4 functions and 40+ tests.
 - wait-timeout dependency eliminated. try_wait() + Instant::now() deadline in the polling loop replaces wait_timeout(). One fewer external dependency.
 - Working directory state evaluated and rejected. 3% context savings from shorter paths doesn't justify hidden state in an engine designed for debuggability in autonomous loops. The existing cwd parameter on bash covers the main pain point. Other tools naturally use paths from prior results.
 - Production line counting: main.rs ~320 + api.rs ~254 + tools/mod.rs ~330 = ~904 total (increase from streaming rewrite and replace_all logic).
 - Session capture (specs/session-capture.md) fully implemented. JSONL transcript, token usage from SSE, session identity (date-uuid), timestamps (UTC ISO 8601), supporting files (prompt.txt, context.md). 12 new session tests + 3 new SSE usage/serialization tests.
-- Dependencies: reqwest 0.13, thiserror 2, futures-util 0.3, serde/serde_json, tokio, clap, uuid 1, chrono 0.4.
+- Dependencies: reqwest 0.13, thiserror 2, futures-util 0.3, serde/serde_json, tokio, clap (derive+env), uuid 1, chrono 0.4.
 
 ## Verification Checklist
 
@@ -265,7 +268,7 @@ The specification has been updated to reflect implementation decisions:
 [x] code_search: surfaces actionable error when rg is not installed
 [x] Conversation context management: trim at exchange boundaries, 720KB budget, oversized block truncation
 [x] SSE incomplete stream detection, trailing buffer processing
-[x] cargo fmt/clippy/build/test passes (150 unit tests)
+[x] cargo fmt/clippy/build/test passes (155 unit tests)
 [x] API error recovery: pop trailing User message + orphaned tool_use
 [x] SSE parser extracted with 17 tests
 [x] Tool loop iteration limit (50) with recover_conversation call
@@ -306,3 +309,5 @@ The specification has been updated to reflect implementation decisions:
 [x] StopReason derives Serialize (serde rename_all = "snake_case")
 [x] Supporting files: prompt.txt (first user input), context.md (session metadata + key actions)
 [x] Release workflow: tag-triggered cross-platform builds (macOS aarch64 + Linux x86_64), CI gate via workflow_call, pinned action SHAs, least-privilege permissions, auto-generated release notes
+[x] API endpoint configuration: --api-url CLI arg (env: ANTHROPIC_API_URL), optional ANTHROPIC_API_KEY, default to tailnet OAuth proxy
+[x] clap env feature enabled for environment variable support on CLI args

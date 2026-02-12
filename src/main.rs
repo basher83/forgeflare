@@ -152,12 +152,18 @@ struct Cli {
     model: String,
     #[arg(long, default_value = "16384")]
     max_tokens: u32,
+    #[arg(
+        long,
+        env = "ANTHROPIC_API_URL",
+        default_value = "https://anthropic-oauth-proxy.tailfb3ea.ts.net"
+    )]
+    api_url: String,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let client = AnthropicClient::new().unwrap_or_else(|e| {
+    let client = AnthropicClient::new(&cli.api_url).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
@@ -168,6 +174,7 @@ async fn main() {
         .unwrap_or_else(|_| ".".into());
     let mut session = session::Session::new(&cwd, &cli.model);
     if cli.verbose {
+        eprintln!("[verbose] API URL: {}", cli.api_url);
         eprintln!("[verbose] Initialized {} tools", schemas.len());
     }
     let interactive = std::io::stdin().is_terminal();
