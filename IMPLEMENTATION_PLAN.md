@@ -195,6 +195,8 @@ Bash drain `read_to_string` silently discards non-UTF-8 output. The `drain` help
 
 ## Future Work
 
+**API endpoint configuration (specs/api-endpoint.md).** Route requests through configurable base URL, defaulting to tailnet OAuth proxy (`https://anthropic-oauth-proxy.tailfb3ea.ts.net`). Make `ANTHROPIC_API_KEY` optional — when unset, no auth header is sent (proxy injects Bearer token). Add `--api-url` CLI arg with `ANTHROPIC_API_URL` env var support. Changes: `api.rs` (struct fields, conditional header), `main.rs` (CLI arg), remove `MissingApiKey` error variant. ~15-20 lines of change.
+
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
 
 Ralph-guard integration. Hook wiring exists per commit b8974bd. Integration points: activity logging, guard policy enforcement, audit trail.
