@@ -705,7 +705,10 @@ mod tests {
             assert_eq!(name, "Glob");
             assert!(!input.is_null(), "input must not be null");
             assert!(input.is_object(), "input must be a JSON object");
-            assert!(input.as_object().unwrap().is_empty(), "input should be empty {{}}");
+            assert!(
+                input.as_object().unwrap().is_empty(),
+                "input should be empty {{}}"
+            );
         } else {
             panic!("expected ToolUse");
         }
