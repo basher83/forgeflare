@@ -151,14 +151,19 @@ impl SseParser {
                     );
                     return Ok(());
                 }
-                if let Some(ContentBlock::ToolUse { input, .. }) = self.blocks.get_mut(idx)
-                    && let Some(f) = self.fragments.get(idx).filter(|f| !f.is_empty())
-                {
-                    *input = serde_json::from_str(f).unwrap_or_else(|e| {
-                        let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
-                        eprintln!("{c}[warning]{r} Corrupt tool input (JSON parse failed: {e})");
-                        Value::Null
-                    });
+                if let Some(ContentBlock::ToolUse { input, .. }) = self.blocks.get_mut(idx) {
+                    match self.fragments.get(idx).filter(|f| !f.is_empty()) {
+                        Some(f) => {
+                            *input = serde_json::from_str(f).unwrap_or_else(|e| {
+                                let (c, r) = (color("\x1b[91m"), color("\x1b[0m"));
+                                eprintln!(
+                                    "{c}[warning]{r} Corrupt tool input (JSON parse failed: {e})"
+                                );
+                                Value::Null
+                            });
+                        }
+                        None => *input = serde_json::json!({}),
+                    }
                 }
                 if let Some(ContentBlock::Text { text }) = self.blocks.get(idx)
                     && !text.is_empty()
@@ -672,6 +677,35 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         if let ContentBlock::ToolUse { input, .. } = &blocks[0] {
             assert!(input.is_null(), "corrupt JSON should produce null input");
+        } else {
+            panic!("expected ToolUse");
+        }
+    }
+
+    #[test]
+    fn sse_tool_use_no_args_defaults_to_empty_object() {
+        // When Claude calls a tool with no arguments (e.g. Glob with no path),
+        // no input_json_delta events arrive. The input must default to {} not null,
+        // because the Anthropic API rejects null tool_use input.
+        let (blocks, stop, _usage) = parse_sse(&[
+            r#"event: content_block_start"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"Glob"}}"#,
+            r#"event: content_block_stop"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"event: message_delta"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+            r#"event: message_stop"#,
+            r#"data: {"type":"message_stop"}"#,
+        ])
+        .unwrap();
+        assert_eq!(stop, StopReason::ToolUse);
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::ToolUse { id, name, input } = &blocks[0] {
+            assert_eq!(id, "t1");
+            assert_eq!(name, "Glob");
+            assert!(!input.is_null(), "input must not be null");
+            assert!(input.is_object(), "input must be a JSON object");
+            assert!(input.as_object().unwrap().is_empty(), "input should be empty {{}}");
         } else {
             panic!("expected ToolUse");
         }

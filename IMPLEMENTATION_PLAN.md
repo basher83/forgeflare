@@ -4,7 +4,7 @@
 
 All requirements (R1-R8) are fully implemented with hardened tool safety, robust SSE error handling, session capture, and configurable API endpoint. The codebase has ~1030 production lines across 4 source files with 155 unit tests.
 
-Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. Bash tool streams output in real time via channel-based streaming (mpsc channels, 50ms polling loop, callback-based output). edit_file supports replace_all for bulk replacements. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention. Session capture writes Entire-compatible JSONL transcripts incrementally to .entire/metadata/{session-id}/full.jsonl with token usage tracking and supporting files (prompt.txt, context.md).
+Core features: SSE streaming with explicit `stop_reason` parsing, unknown block type handling, mid-stream error detection, incomplete stream detection. Bash tool streams output in real time via channel-based streaming (mpsc channels, 50ms polling loop, callback-based output). Edit supports replace_all for bulk replacements. CLI supports `--verbose`, `--model`, `--max-tokens` flags and stdin pipe detection. Piped stdin reads all input as a single prompt. Conversation context management with truncation safety valve. API error recovery preserves conversation alternation invariant including orphaned tool_use cleanup. All terminal color output respects the NO_COLOR convention. Session capture writes Entire-compatible JSONL transcripts incrementally to .entire/metadata/{session-id}/full.jsonl with token usage tracking and supporting files (prompt.txt, context.md).
 
 Tool safety: bash command guard blocks destructive patterns (rm -rf /, fork bombs, dd to block devices including /dev/sd, /dev/nvme, /dev/vd, /dev/hd, mkfs, chmod 777, git push --force, git push -f) with whitespace normalization and expanded flag ordering coverage. Redirect-to-device patterns cover all four device families. Timeout drain thread leak fixed. walk() has depth limit (MAX_WALK_DEPTH=20) and skips permission-denied entries. SSE parser validates tool_use blocks have non-empty id/name fields. search_exec applies 50-line cap before 100KB byte cap.
 
@@ -197,6 +197,8 @@ context.md key actions extraction iterates tool_use blocks and takes the first a
 
 Bash drain `read_to_string` silently discards non-UTF-8 output. The `drain` helper in `bash_exec` used `read_to_string` on subprocess stdout/stderr. When a command emits non-UTF-8 bytes (binary tools, locale issues, `git diff` on binary files), `read_to_string` returns an error at the first invalid byte, and the `let _ =` discards it — silently losing all output after the invalid byte. Fixed by reading into `Vec<u8>` with `read_to_end` and converting with `String::from_utf8_lossy`, which replaces invalid bytes with U+FFFD. 1 new test.
 
+Tool name validation by Anthropic's OAuth proxy requires PascalCase names matching Claude Code conventions. The proxy validates tool names when requests carry OAuth credentials (Claude Max subscription). snake_case names (read_file, bash) get 400 errors; PascalCase names (Read, Bash) succeed. This is a pure rename with no behavioral changes — internal function names (read_exec, bash_exec) remain unchanged.
+
 ## Future Work
 
 Subagent dispatch (spec R8). The SubagentContext type was removed as dead code. StopReason enum remains for dispatch loop control. Integration point comments removed from main.rs. Actual dispatch logic remains unimplemented per spec's non-goals.
@@ -249,7 +251,7 @@ The specification has been updated to reflect implementation decisions:
 
 ## Verification Checklist
 
-[x] All 5 tools implemented: read_file, list_files, bash, edit_file, code_search
+[x] All 5 tools implemented: Read, Glob, Bash, Edit, Grep
 [x] SSE streaming with real-time output and stop_reason parsing (R7)
 [x] SSE unknown block type handling, mid-stream error events, index validation
 [x] Partial tool_use blocks with null input filtered on MaxTokens truncation
@@ -311,3 +313,4 @@ The specification has been updated to reflect implementation decisions:
 [x] Release workflow: tag-triggered cross-platform builds (macOS aarch64 + Linux x86_64), CI gate via workflow_call, pinned action SHAs, least-privilege permissions, auto-generated release notes
 [x] API endpoint configuration: --api-url CLI arg (env: ANTHROPIC_API_URL), optional ANTHROPIC_API_KEY, default to tailnet OAuth proxy
 [x] clap env feature enabled for environment variable support on CLI args
+[x] Tool names renamed to PascalCase (Read, Glob, Bash, Edit, Grep) for OAuth proxy compatibility (specs/tool-name-compliance.md)
