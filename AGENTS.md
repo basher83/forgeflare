@@ -34,7 +34,7 @@ src/
   main.rs         — CLI loop, user interface, system prompt (build_system_prompt)
   api.rs          — Anthropic client (reqwest + SSE), Usage struct
   session.rs      — Session transcript persistence (Entire-compatible JSONL)
-  tools/mod.rs    — 5 tools: read, list, bash (streaming), edit (replace_all), search
+  tools/mod.rs    — 5 tools: Read, Glob, Bash (streaming), Edit (replace_all), Grep
 .github/workflows/
   ci.yml          — CI pipeline: lint, audit, test, build (4 parallel jobs)
   release.yml     — Release builds: macOS aarch64 + Linux x86_64 tarballs (tag-triggered)

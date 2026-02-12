@@ -305,13 +305,13 @@ mod tests {
     fn tool_use_block_serialization() {
         let block = ContentBlock::ToolUse {
             id: "id-1".into(),
-            name: "bash".into(),
+            name: "Bash".into(),
             input: serde_json::json!({"command": "ls"}),
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "tool_use");
         assert_eq!(json["id"], "id-1");
-        assert_eq!(json["name"], "bash");
+        assert_eq!(json["name"], "Bash");
         assert_eq!(json["input"]["command"], "ls");
     }
 
@@ -362,11 +362,11 @@ mod tests {
 
     #[test]
     fn tool_use_deserialization() {
-        let json = r#"{"type":"tool_use","id":"abc","name":"bash","input":{"command":"ls"}}"#;
+        let json = r#"{"type":"tool_use","id":"abc","name":"Bash","input":{"command":"ls"}}"#;
         let block: ContentBlock = serde_json::from_str(json).unwrap();
         if let ContentBlock::ToolUse { id, name, input } = block {
             assert_eq!(id, "abc");
-            assert_eq!(name, "bash");
+            assert_eq!(name, "Bash");
             assert_eq!(input["command"], "ls");
         } else {
             panic!("expected ToolUse");
@@ -436,7 +436,7 @@ mod tests {
             },
             ContentBlock::ToolUse {
                 id: "t1".into(),
-                name: "bash".into(),
+                name: "Bash".into(),
                 input: serde_json::json!({"command": "ls"}),
             },
             ContentBlock::Text {
@@ -486,7 +486,7 @@ mod tests {
     fn sse_tool_use_response() {
         let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
-            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"Bash"}}"#,
             r#"event: content_block_delta"#,
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"comm"}}"#,
             r#"event: content_block_delta"#,
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         if let ContentBlock::ToolUse { id, name, input } = &blocks[0] {
             assert_eq!(id, "t1");
-            assert_eq!(name, "bash");
+            assert_eq!(name, "Bash");
             assert_eq!(input["command"], "ls");
         } else {
             panic!("expected ToolUse");
@@ -520,7 +520,7 @@ mod tests {
             r#"event: content_block_stop"#,
             r#"data: {"type":"content_block_stop","index":0}"#,
             r#"event: content_block_start"#,
-            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"read_file"}}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Read"}}"#,
             r#"event: content_block_delta"#,
             r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"src/main.rs\"}"}}"#,
             r#"event: content_block_stop"#,
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(stop, StopReason::ToolUse);
         assert_eq!(blocks.len(), 2);
         assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "Let me check"));
-        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "read_file"));
+        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "Read"));
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
     fn sse_corrupt_tool_json_produces_null_input() {
         let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
-            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"Bash"}}"#,
             r#"event: content_block_delta"#,
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"broken"}}"#,
             r#"event: content_block_stop"#,
@@ -747,7 +747,7 @@ mod tests {
         // A tool_use block with empty id should be treated as corrupt and filtered out
         let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
-            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"","name":"bash"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"","name":"Bash"}}"#,
             r#"event: content_block_stop"#,
             r#"data: {"type":"content_block_stop","index":0}"#,
             r#"event: content_block_start"#,
@@ -786,7 +786,7 @@ mod tests {
         // A tool_use block with no id field should be treated as corrupt
         let (blocks, _, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
-            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"bash"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Bash"}}"#,
             r#"event: content_block_stop"#,
             r#"data: {"type":"content_block_stop","index":0}"#,
             r#"event: message_delta"#,
@@ -801,7 +801,7 @@ mod tests {
         // content_block_stop with an out-of-bounds index should not panic or corrupt data
         let (blocks, stop, _usage) = parse_sse(&[
             r#"event: content_block_start"#,
-            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"Bash"}}"#,
             r#"event: content_block_delta"#,
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}"#,
             // Stop event with wrong index — should warn but not crash

@@ -51,15 +51,15 @@ macro_rules! tools {
 }
 
 tools! {
-    "read_file", "Read file contents with line numbers. 1MB size limit. Detects binary files. Use before editing — never edit without reading first.",
+    "Read", "Read file contents with line numbers. 1MB size limit. Detects binary files. Use before editing — never edit without reading first.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "File path to read"}}, "required": ["path"]});
-    "list_files", "List files and directories. Defaults to current directory, non-recursive. Skips .git, .devenv, node_modules, target, .venv, vendor. 1000 entry cap.",
+    "Glob", "List files and directories. Defaults to current directory, non-recursive. Skips .git, .devenv, node_modules, target, .venv, vendor. 1000 entry cap.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "Optional path to list"}, "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"}}, "required": []});
-    "bash", "Execute a bash command. 120s timeout, 100KB output cap. Streams output in real time. Non-zero exit = error. Each call is a fresh shell — use cwd param or absolute paths.",
+    "Bash", "Execute a bash command. 120s timeout, 100KB output cap. Streams output in real time. Non-zero exit = error. Each call is a fresh shell — use cwd param or absolute paths.",
     serde_json::json!({"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "cwd": {"type": "string", "description": "Optional working directory"}}, "required": ["command"]});
-    "edit_file", "Make edits to a text file (1MB limit). Replaces 'old_str' with 'new_str'. By default old_str must match exactly once; set replace_all=true to replace every occurrence. old_str and new_str MUST differ. Empty old_str + missing file = create. Empty old_str + existing file = append.",
+    "Edit", "Make edits to a text file (1MB limit). Replaces 'old_str' with 'new_str'. By default old_str must match exactly once; set replace_all=true to replace every occurrence. old_str and new_str MUST differ. Empty old_str + missing file = create. Empty old_str + existing file = append.",
     serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "The path to the file"}, "old_str": {"type": "string", "description": "Text to search for (must match exactly once unless replace_all is true). Empty string = create/append mode"}, "new_str": {"type": "string", "description": "Text to replace old_str with"}, "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_str (default: false)"}}, "required": ["path", "old_str", "new_str"]});
-    "code_search", "Search code via ripgrep (rg). Regex patterns, case-insensitive by default. 50 match limit. Prefer over bash grep/find.",
+    "Grep", "Search code via ripgrep (rg). Regex patterns, case-insensitive by default. 50 match limit. Prefer over bash grep/find.",
     serde_json::json!({"type": "object", "properties": {"pattern": {"type": "string", "description": "The search pattern or regex"}, "path": {"type": "string", "description": "Optional path to search in"}, "file_type": {"type": "string", "description": "File extension filter (e.g. 'go', 'js')"}, "case_sensitive": {"type": "boolean", "description": "Case sensitive (default: false)"}}, "required": ["pattern"]});
 }
 
@@ -70,23 +70,23 @@ pub fn dispatch_tool(
     on_output: &mut dyn FnMut(&str),
 ) -> ContentBlock {
     let (content, is_error) = match name {
-        "read_file" => match read_exec(input) {
+        "Read" => match read_exec(input) {
             Ok(s) => (s, None),
             Err(s) => (s, Some(true)),
         },
-        "list_files" => match list_exec(input) {
+        "Glob" => match list_exec(input) {
             Ok(s) => (s, None),
             Err(s) => (s, Some(true)),
         },
-        "bash" => match bash_exec(input, on_output) {
+        "Bash" => match bash_exec(input, on_output) {
             Ok(s) => (s, None),
             Err(s) => (s, Some(true)),
         },
-        "edit_file" => match edit_exec(input) {
+        "Edit" => match edit_exec(input) {
             Ok(s) => (s, None),
             Err(s) => (s, Some(true)),
         },
-        "code_search" => match search_exec(input) {
+        "Grep" => match search_exec(input) {
             Ok(s) => (s, None),
             Err(s) => (s, Some(true)),
         },
@@ -424,17 +424,17 @@ mod tests {
         let schemas = all_tool_schemas();
         assert_eq!(schemas.len(), 5);
         let names: Vec<&str> = schemas.iter().filter_map(|s| s["name"].as_str()).collect();
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"list_files"));
-        assert!(names.contains(&"bash"));
-        assert!(names.contains(&"edit_file"));
-        assert!(names.contains(&"code_search"));
+        assert!(names.contains(&"Read"));
+        assert!(names.contains(&"Glob"));
+        assert!(names.contains(&"Bash"));
+        assert!(names.contains(&"Edit"));
+        assert!(names.contains(&"Grep"));
     }
 
     #[test]
     fn dispatch_known_tool() {
         let block = t_dispatch(
-            "bash",
+            "Bash",
             serde_json::json!({"command": "echo dispatch_test"}),
             "test-id",
         );
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn dispatch_tool_error_propagates() {
         let block = t_dispatch(
-            "read_file",
+            "Read",
             serde_json::json!({"path": "/tmp/_nonexistent_forgeflare_"}),
             "id-2",
         );
@@ -1141,7 +1141,7 @@ mod tests {
         assert!(result.is_ok(), "successful commands return Ok");
 
         let block = t_dispatch(
-            "bash",
+            "Bash",
             serde_json::json!({"command": "false"}),
             "error-test",
         );
@@ -1242,7 +1242,7 @@ mod tests {
         // Corrupt tool_use blocks from SSE parse failures have Value::Null input.
         // Tools with required parameters should return is_error.
         // list_files has no required parameters, so null input succeeds (lists cwd).
-        for name in ["read_file", "bash", "edit_file", "code_search"] {
+        for name in ["Read", "Bash", "Edit", "Grep"] {
             let block = t_dispatch(name, Value::Null, "null-test");
             if let ContentBlock::ToolResult { is_error, .. } = &block {
                 assert_eq!(*is_error, Some(true), "{name} should error on null input");
@@ -1467,7 +1467,7 @@ mod tests {
     fn dispatch_streams_bash_output() {
         let mut chunks = Vec::new();
         let block = dispatch_tool(
-            "bash",
+            "Bash",
             serde_json::json!({"command": "echo streamed"}),
             "stream-test",
             &mut |s| chunks.push(s.to_string()),

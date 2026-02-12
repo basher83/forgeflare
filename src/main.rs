@@ -16,37 +16,37 @@ fn build_system_prompt() -> String {
          \n\
          # Tools\n\
          \n\
-         read_file(path): Returns file contents with line numbers. 1MB limit. Detects binary files.\n\
+         Read(path): Returns file contents with line numbers. 1MB limit. Detects binary files.\n\
          - Use BEFORE editing any file. Never edit blind.\n\
-         - Prefer over bash cat/head — gives line numbers for precise edits.\n\
+         - Prefer over Bash cat/head — gives line numbers for precise edits.\n\
          \n\
-         list_files(path?, recursive?): Lists files/dirs. Default: non-recursive. 1000 entry cap.\n\
+         Glob(path?, recursive?): Lists files/dirs. Default: non-recursive. 1000 entry cap.\n\
          - Skips: .git, node_modules, target, .venv, vendor, .devenv\n\
          - Use to orient in unfamiliar directories before diving into files.\n\
          \n\
-         bash(command, cwd?): Executes shell command. 120s timeout, 100KB output cap.\n\
+         Bash(command, cwd?): Executes shell command. 120s timeout, 100KB output cap.\n\
          - Non-zero exit = is_error. Use for builds, tests, git, installs.\n\
          - Working directory resets each call — use cwd param or absolute paths.\n\
          - Never run destructive ops (rm -rf, force push, reset --hard) without user approval.\n\
          \n\
-         edit_file(path, old_str, new_str, replace_all?): Surgical text replacement.\n\
+         Edit(path, old_str, new_str, replace_all?): Surgical text replacement.\n\
          - old_str must match EXACTLY once unless replace_all=true.\n\
          - replace_all=true: replaces every occurrence (for renames, bulk changes).\n\
          - old_str != new_str (no-op rejected).\n\
          - Empty old_str + existing file = append. Empty old_str + missing file = create (with mkdir).\n\
          - On 'not found': re-read the file — likely whitespace/indentation mismatch.\n\
          - On 'found N times': include more context to make unique, or use replace_all.\n\
-         - Always verify: read_file after editing to confirm the change.\n\
+         - Always verify: Read after editing to confirm the change.\n\
          \n\
-         code_search(pattern, path?, file_type?, case_sensitive?): Wraps ripgrep.\n\
+         Grep(pattern, path?, file_type?, case_sensitive?): Wraps ripgrep.\n\
          - Regex patterns, case-insensitive by default. file_type: \"rust\", \"js\", \"py\", etc.\n\
-         - 50 match limit. Prefer over bash grep/find for code search.\n\
+         - 50 match limit. Prefer over Bash grep/find for code search.\n\
          - Use to find definitions, call sites, patterns before making changes.\n\
          \n\
          # Workflow\n\
          \n\
          1. Understand the request — ask for clarification if ambiguous.\n\
-         2. Explore first: code_search/read_file to understand existing code before changes.\n\
+         2. Explore first: Grep/Read to understand existing code before changes.\n\
          3. Plan your approach, then execute. For multi-file changes, work in dependency order.\n\
          4. Verify every edit by reading the file back.\n\
          5. Run tests/build after changes to confirm nothing is broken.\n\
@@ -375,7 +375,7 @@ mod tests {
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: "t1".into(),
-                name: "bash".into(),
+                name: "Bash".into(),
                 input: serde_json::json!({"command": "ls"}),
             }],
         }
@@ -605,12 +605,12 @@ mod tests {
                 },
                 ContentBlock::ToolUse {
                     id: "t1".into(),
-                    name: "bash".into(),
+                    name: "Bash".into(),
                     input: serde_json::json!({"command": "ls"}),
                 },
                 ContentBlock::ToolUse {
                     id: "t2".into(),
-                    name: "read_file".into(),
+                    name: "Read".into(),
                     input: Value::Null, // partial — never completed
                 },
             ],
@@ -620,7 +620,7 @@ mod tests {
             .retain(|b| !matches!(b, ContentBlock::ToolUse { input, .. } if input.is_null()));
         assert_eq!(msg.content.len(), 2);
         assert!(matches!(&msg.content[0], ContentBlock::Text { .. }));
-        assert!(matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "bash"));
+        assert!(matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "Bash"));
     }
 
     #[test]
@@ -726,10 +726,10 @@ mod tests {
             prompt.contains(std::env::consts::ARCH),
             "should contain arch"
         );
-        assert!(prompt.contains("read_file"), "should list tools");
+        assert!(prompt.contains("Read(path)"), "should list Read tool");
         assert!(
-            prompt.contains("edit_file"),
-            "should contain edit_file guidance"
+            prompt.contains("Edit(path"),
+            "should contain Edit tool guidance"
         );
         assert!(
             prompt.contains("Never edit blind"),
@@ -777,7 +777,7 @@ mod tests {
                 },
                 ContentBlock::ToolUse {
                     id: "t1".into(),
-                    name: "read_file".into(),
+                    name: "Read".into(),
                     input: Value::Null,
                 },
             ],
@@ -802,7 +802,7 @@ mod tests {
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: "t1".into(),
-                name: "read_file".into(),
+                name: "Read".into(),
                 input: Value::Null,
             }],
         };
