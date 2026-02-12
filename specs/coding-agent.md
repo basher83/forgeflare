@@ -34,11 +34,11 @@ tools! {
 - Macro generates schemas; dispatch is hand-written to support per-tool signatures (bash streaming)
 
 **R4. Five Tools**
-1. **Read** — read_file(path) → file contents (handle binary, size limits)
-2. **List** — list_files(path, recursive?) → [files]
-3. **Bash** — bash(command, cwd?) → stdout/stderr (timeout, streaming output via callback)
-4. **Edit** — edit_file(path, old_str, new_str, replace_all?) → success/error (exact match by default; replace_all=true for bulk changes; empty old_str on missing file = create with mkdir, empty old_str on existing file = append)
-5. **Search** — code_search(pattern, path?, file_type?, case_sensitive?) → matches (shell out to `rg`)
+1. **Read** — Read(path) → file contents (handle binary, size limits)
+2. **Glob** — Glob(path?, recursive?) → [files]
+3. **Bash** — Bash(command, cwd?) → stdout/stderr (timeout, streaming output via callback)
+4. **Edit** — Edit(path, old_str, new_str, replace_all?) → success/error (exact match by default; replace_all=true for bulk changes; empty old_str on missing file = create with mkdir, empty old_str on existing file = append)
+5. **Grep** — Grep(pattern, path?, file_type?, case_sensitive?) → matches (shell out to `rg`)
 
 **R5. CLI Interface**
 - Single binary, no subcommands required
