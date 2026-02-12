@@ -90,6 +90,30 @@ if ! check_sandbox; then
     sleep 5
 fi
 
+# --- Git pre-flight check ---
+# Verify commits and pushes will work before burning loop iterations.
+# Interactive credential managers (1Password, gpg pinentry) block headless commits.
+check_git() {
+    # Can we commit? (catches signing issues, missing user.email, etc.)
+    if ! git commit --allow-empty --dry-run -m "preflight" >/dev/null 2>&1; then
+        return 1
+    fi
+    # Can we push? (catches auth issues, wrong remote URL, etc.)
+    if ! git push --dry-run origin "$CURRENT_BRANCH" >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+if ! check_git; then
+    echo "ERROR: Git pre-flight failed."
+    echo "   The loop commits and pushes after each iteration."
+    echo "   Common fixes:"
+    echo "     - Disable commit signing: git config --local commit.gpgsign false"
+    echo "     - Switch to HTTPS remote: git remote set-url origin https://..."
+    echo "     - Authenticate gh CLI: gh auth login"
+    exit 1
+fi
+
 # Signal handler — kill claude process and exit cleanly
 cleanup() {
     echo -e "\n\nCaught signal, stopping..."
