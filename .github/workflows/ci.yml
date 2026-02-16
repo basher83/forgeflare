@@ -4,8 +4,24 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "specs/**"
+      - "reference/**"
+      - "renovate.json"
+      - ".gitignore"
+      - "loop.sh"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "specs/**"
+      - "reference/**"
+      - "renovate.json"
+      - ".gitignore"
+      - "loop.sh"
   workflow_call:
 
 env:
