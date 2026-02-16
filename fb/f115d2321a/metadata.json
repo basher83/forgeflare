@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.4.3",
+  "checkpoint_id": "fbf115d2321a",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "src/api.rs",
+    "src/main.rs",
+    "src/tools/mod.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fb/f115d2321a/0/metadata.json",
+      "transcript": "/fb/f115d2321a/0/full.jsonl",
+      "context": "/fb/f115d2321a/0/context.md",
+      "content_hash": "/fb/f115d2321a/0/content_hash.txt",
+      "prompt": "/fb/f115d2321a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 51,
+    "cache_creation_tokens": 118269,
+    "cache_read_tokens": 5097254,
+    "output_tokens": 652,
+    "api_call_count": 50
+  }
+}
