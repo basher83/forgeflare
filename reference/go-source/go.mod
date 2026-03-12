@@ -3,7 +3,7 @@ module chat
 go 1.24.2
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.22.0
+	github.com/anthropics/anthropic-sdk-go v1.22.1
 	github.com/invopop/jsonschema v0.13.0
 )
 
